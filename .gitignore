@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Extracted item database (regenerated from .gz)
+items.txt
+
+# User data
+*.json
+!package.json
+
+# EQ files
+*.ini
+*.bak
+*-Inventory.txt
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Screenshots (keep folder, ignore large files)
+screenshots/*.png
+!screenshots/.gitkeep
