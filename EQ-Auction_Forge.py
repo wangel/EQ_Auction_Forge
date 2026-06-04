@@ -933,10 +933,8 @@ Pricing: tlp-auctions.com"""
 def main():
     parser = argparse.ArgumentParser(description="EQ Auction Forge v1.2.0 - wangel")
     parser.add_argument("--db", default=ITEMS_DB)
-    parser.add_argument("--server", default=SERVER)
     args = parser.parse_args()
 
-    _config["server"] = args.server
     app = AuctionBuilder(db_path=args.db)
     app.run()
 

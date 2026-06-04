@@ -64,14 +64,12 @@ No `pip install` needed — runs entirely on Python's standard library.
 
 ```bash
 python EQ-Auction_Forge.py                              # Default
-python EQ-Auction_Forge.py --server Frostreaver         # Set server for price checks
 python EQ-Auction_Forge.py --db /path/to/items.txt.gz   # Custom item database
 ```
 
 ### Supported Servers (Price Checking)
 
-Price checking works with any server supported by [TLP Auctions](https://www.tlp-auctions.com):
-- Frostreaver, Teek, Oakwynd, Yelinak, Mischief, Thornblade, and more
+Price checking uses [TLP Auctions](https://www.tlp-auctions.com) data. The server dropdown lists **Frostreaver** — once a TLP gets the Bazaar, its tunnel-trade data dries up, so that's the only actively useful server for now. The box is editable, so you can type another server TLP Auctions tracks if needed.
 
 ### How Item Links Work
 
