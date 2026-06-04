@@ -55,6 +55,9 @@ def _cache_dir():
 
 ITEMS_DB = os.path.join(_app_dir(), "items.txt.gz")
 SERVER = "Frostreaver"
+# Servers selectable in the UI dropdown. The box is editable, so a server
+# not listed here can still be typed in for price checks.
+SERVERS = ["Frostreaver", "Teek", "Oakwynd", "Yelinak", "Mischief", "Thornblade"]
 _config = {"server": "Frostreaver"}
 API_BASE = "https://api.tlp-auctions.com"
 
@@ -211,7 +214,7 @@ class AuctionBuilder:
         self.inv_loaded = False
 
         self.root = tk.Tk()
-        self.root.title("EQ Auction Forge v1 — by wangel")
+        self.root.title("EQ Auction Forge v1.1.0 — by wangel")
         self.root.configure(bg='#1a1a1a')
         self.root.geometry("1000x800")
         self._build_ui()
@@ -227,6 +230,13 @@ class AuctionBuilder:
         style.configure('Treeview', background='#2a2a2a', foreground='#cccccc',
                         fieldbackground='#2a2a2a', font=('Consolas', 9))
         style.configure('Treeview.Heading', font=('Consolas', 9, 'bold'))
+        style.configure('TCombobox', fieldbackground='#2a2a2a',
+                        background='#2a2a2a', foreground='#cccccc',
+                        font=('Consolas', 9))
+        # Dark theme for the combobox dropdown list
+        self.root.option_add('*TCombobox*Listbox.background', '#2a2a2a')
+        self.root.option_add('*TCombobox*Listbox.foreground', '#cccccc')
+        self.root.option_add('*TCombobox*Listbox.selectBackground', '#444444')
 
         # === Top ===
         top = ttk.Frame(self.root)
@@ -234,6 +244,15 @@ class AuctionBuilder:
         ttk.Button(top, text="Load Inventory", command=self._load_inventory).pack(side='left')
         self.status_var = tk.StringVar(value="Loading...")
         ttk.Label(top, textvariable=self.status_var, foreground='#888888').pack(side='left', padx=10)
+
+        # Server selector (drives price checks). Editable so any server can be typed.
+        ttk.Label(top, text="Server:").pack(side='left', padx=(10, 2))
+        self.server_var = tk.StringVar(value=_config["server"])
+        self.server_var.trace_add(
+            'write', lambda *a: _config.__setitem__('server', self.server_var.get().strip()))
+        ttk.Combobox(top, textvariable=self.server_var, values=SERVERS,
+                     width=13).pack(side='left')
+
         self.db_count_var = tk.StringVar()
         ttk.Label(top, textvariable=self.db_count_var, foreground='#00ff00').pack(side='right')
         ttk.Button(top, text="Help", command=self._show_help).pack(side='right', padx=5)
@@ -334,8 +353,9 @@ class AuctionBuilder:
         self.page_var = tk.StringVar(value="2")
         ttk.Entry(sf, textvariable=self.page_var, width=3).pack(side='left', padx=5)
         ttk.Label(sf, text="Suffix:").pack(side='left', padx=(10, 0))
-        self.suffix_var = tk.StringVar(value="PST")
-        ttk.Entry(sf, textvariable=self.suffix_var, width=8).pack(side='left', padx=5)
+        self.suffix_var = tk.StringVar(value="")
+        ttk.Entry(sf, textvariable=self.suffix_var, width=8).pack(side='left', padx=(5, 2))
+        ttk.Button(sf, text="?", width=2, command=self._suffix_help).pack(side='left')
 
         # Generate / Copy
         bf = ttk.Frame(self.macro_panel)
@@ -386,6 +406,20 @@ class AuctionBuilder:
             self.macro_expanded = True
             self.macro_toggle_btn.config(text="▾  Macro Builder")
 
+    def _suffix_help(self):
+        """Explain what the optional Suffix field does."""
+        messagebox.showinfo(
+            "Suffix",
+            "Optional text added to the END of every generated auction "
+            "line, after your items.\n\n"
+            "Leave it blank for none.\n\n"
+            "Example — a suffix of \"PST\" turns:\n"
+            "    /auc WTS <item>, <item>\n"
+            "into:\n"
+            "    /auc WTS <item>, <item> PST\n\n"
+            "Note: it repeats on each line, so if your items span several "
+            "lines the suffix appears on each one.")
+
     def _log(self, msg):
         self.console.insert('end', f"{msg}\n")
         self.console.see('end')
@@ -403,7 +437,7 @@ class AuctionBuilder:
             font=('Consolas', 9), wrap='word', padx=10, pady=10)
         txt.pack(fill='both', expand=True, padx=10, pady=10)
 
-        help_text = """EQ Auction Forge v1
+        help_text = """EQ Auction Forge v1.1.0
 by wangel
 
 HOW TO USE:
@@ -872,7 +906,7 @@ Pricing: tlp-auctions.com"""
 
 
 def main():
-    parser = argparse.ArgumentParser(description="EQ Auction Forge v1 - wangel")
+    parser = argparse.ArgumentParser(description="EQ Auction Forge v1.1.0 - wangel")
     parser.add_argument("--db", default=ITEMS_DB)
     parser.add_argument("--server", default=SERVER)
     args = parser.parse_args()
