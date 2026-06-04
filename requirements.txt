@@ -1,0 +1,24 @@
+# EQ Auction Forge — dependencies
+#
+# This app uses ONLY the Python standard library. There are no pip packages
+# to install, so this file is intentionally (almost) empty.
+#
+# REQUIREMENTS:
+#   - Python 3.8 or newer
+#   - tkinter  (GUI toolkit)
+#
+# About tkinter:
+#   tkinter is part of Python's standard library and CANNOT be installed
+#   with pip. On Windows and macOS it is included automatically by the
+#   official installer from https://www.python.org/downloads/ (make sure
+#   "tcl/tk and IDLE" stays checked during install).
+#
+#   On Linux it may be a separate OS package:
+#     Debian/Ubuntu:  sudo apt install python3-tk
+#     Fedora:         sudo dnf install python3-tkinter
+#     Arch:           sudo pacman -S tk
+#
+# To run from source:
+#     python EQ-Auction_Forge.py
+#
+# (No `pip install -r requirements.txt` step is needed.)

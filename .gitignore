@@ -6,6 +6,10 @@ __pycache__/
 dist/
 build/
 
+# PyInstaller / release packaging
+*.spec
+release_stage/
+
 # Extracted item database (regenerated from .gz)
 items.txt
 

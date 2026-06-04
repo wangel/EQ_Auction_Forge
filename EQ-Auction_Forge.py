@@ -16,6 +16,7 @@ import gzip
 import csv
 import json
 import argparse
+import tempfile
 import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
@@ -24,11 +25,42 @@ from urllib.parse import quote
 
 import ssl
 
+# A windowed PyInstaller build has no console, so sys.stdout/stderr are None.
+# Guard against stray print()/traceback writes crashing the app.
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, 'w')
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, 'w')
+
 DC2 = '\x12'
-ITEMS_DB = "items.txt.gz"
+
+
+def _app_dir():
+    """Directory the app lives in — works whether run as a .py or a
+    PyInstaller-frozen .exe. Used to locate items.txt.gz regardless of
+    the current working directory the app was launched from."""
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def _cache_dir():
+    """User-writable folder for the extracted items.txt, so the app works
+    even when installed somewhere read-only (e.g. Program Files)."""
+    base = os.environ.get('LOCALAPPDATA') or tempfile.gettempdir()
+    d = os.path.join(base, 'EQAuctionForge')
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+ITEMS_DB = os.path.join(_app_dir(), "items.txt.gz")
 SERVER = "Frostreaver"
 _config = {"server": "Frostreaver"}
 API_BASE = "https://api.tlp-auctions.com"
+
+# EQ socials layout: 10 pages, 12 buttons per page.
+BUTTONS_PER_PAGE = 12
+MAX_PAGE = 10
 
 # SSL context — their API cert doesn't match the hostname
 _ssl_ctx = ssl.create_default_context()
@@ -38,7 +70,7 @@ _ssl_ctx.verify_mode = ssl.CERT_NONE
 
 def load_item_database(gz_path):
     items = {}
-    txt_path = gz_path.replace('.gz', '')
+    txt_path = os.path.join(_cache_dir(), 'items.txt')
     if not os.path.isfile(txt_path):
         if not os.path.isfile(gz_path):
             return items
@@ -179,7 +211,7 @@ class AuctionBuilder:
         self.inv_loaded = False
 
         self.root = tk.Tk()
-        self.root.title("EQ Auction Builder v4 — by Wangel")
+        self.root.title("EQ Auction Forge v1 — by wangel")
         self.root.configure(bg='#1a1a1a')
         self.root.geometry("1000x800")
         self._build_ui()
@@ -265,7 +297,7 @@ class AuctionBuilder:
         self.auc_tree.bind('<Double-1>', self._remove_from_auction)
         self.auc_tree.bind('<<TreeviewSelect>>', self._on_auction_select)
 
-        # Price controls
+        # Price controls (always visible — core flow for price-only users)
         pf = ttk.Frame(right)
         pf.pack(fill='x', pady=3)
         ttk.Label(pf, text="Price:").pack(side='left')
@@ -275,8 +307,25 @@ class AuctionBuilder:
         ttk.Button(pf, text="Price Check", command=self._price_check).pack(side='left', padx=3)
         ttk.Button(pf, text="PC All", command=self._price_check_all).pack(side='left', padx=3)
 
+        # Auction-list management (always visible)
+        lbf = ttk.Frame(right)
+        lbf.pack(fill='x', pady=3)
+        ttk.Button(lbf, text="Clear", command=self._clear).pack(side='left')
+        ttk.Button(lbf, text="Save List", command=self._save_auction).pack(side='left', padx=(15, 3))
+        ttk.Button(lbf, text="Load List", command=self._load_auction).pack(side='left')
+
+        # --- Collapsible "Macro Builder" section ---
+        self.macro_expanded = False
+        self.macro_toggle_btn = ttk.Button(
+            right, text="▸  Macro Builder  (click to expand)",
+            command=self._toggle_macro_panel)
+        self.macro_toggle_btn.pack(fill='x', pady=(6, 0))
+
+        # Panel is built but NOT packed yet (collapsed by default)
+        self.macro_panel = ttk.Frame(right)
+
         # Settings
-        sf = ttk.Frame(right)
+        sf = ttk.Frame(self.macro_panel)
         sf.pack(fill='x', pady=3)
         ttk.Label(sf, text="Prefix:").pack(side='left')
         self.prefix_var = tk.StringVar(value="/auc WTS")
@@ -288,17 +337,14 @@ class AuctionBuilder:
         self.suffix_var = tk.StringVar(value="PST")
         ttk.Entry(sf, textvariable=self.suffix_var, width=8).pack(side='left', padx=5)
 
-        # Buttons row 1
-        bf = ttk.Frame(right)
+        # Generate / Copy
+        bf = ttk.Frame(self.macro_panel)
         bf.pack(fill='x', pady=3)
         ttk.Button(bf, text="Generate", command=self._generate).pack(side='left')
         ttk.Button(bf, text="Copy", command=self._copy).pack(side='left', padx=5)
-        ttk.Button(bf, text="Clear", command=self._clear).pack(side='left')
-        ttk.Button(bf, text="Save", command=self._save_auction).pack(side='left', padx=(15, 3))
-        ttk.Button(bf, text="Load", command=self._load_auction).pack(side='left')
 
-        # Buttons row 2 - INI writing
-        bf2 = ttk.Frame(right)
+        # INI writing
+        bf2 = ttk.Frame(self.macro_panel)
         bf2.pack(fill='x', pady=2)
         ttk.Button(bf2, text="Write to INI", command=self._write_ini).pack(side='left')
         ttk.Label(bf2, text="INI:", foreground='#888888').pack(side='left', padx=(10, 2))
@@ -308,22 +354,37 @@ class AuctionBuilder:
         self.ini_path = None
 
         # Output
-        ttk.Label(right, text="INI Output:").pack(anchor='w', pady=(3, 0))
+        ttk.Label(self.macro_panel, text="INI Output:").pack(anchor='w', pady=(3, 0))
         self.output_text = scrolledtext.ScrolledText(
-            right, height=8, bg='#2a2a2a', fg='#00ff00',
+            self.macro_panel, height=8, bg='#2a2a2a', fg='#00ff00',
             font=('Consolas', 9), insertbackground='#00ff00')
         self.output_text.pack(fill='both', expand=True)
 
-        # Log/Console
-        ttk.Label(right, text="Log:").pack(anchor='w', pady=(3, 0))
-        self.console = scrolledtext.ScrolledText(
-            right, height=5, bg='#1e1e1e', fg='#cccccc',
-            font=('Consolas', 8), insertbackground='#cccccc')
-        self.console.pack(fill='x')
-
-        ttk.Label(right,
+        ttk.Label(self.macro_panel,
                   text="Save INI as ANSI encoding! (Notepad++ > Encoding > ANSI)",
                   foreground='#FF4500', font=('Consolas', 8, 'bold')).pack(pady=(2, 0))
+
+        # Log/Console (always visible — bigger now, grows to fill free space)
+        self.log_label = ttk.Label(right, text="Log:")
+        self.log_label.pack(anchor='w', pady=(3, 0))
+        self.console = scrolledtext.ScrolledText(
+            right, height=12, bg='#1e1e1e', fg='#cccccc',
+            font=('Consolas', 8), insertbackground='#cccccc')
+        self.console.pack(fill='both', expand=True)
+
+    def _toggle_macro_panel(self):
+        """Show/hide the macro-building controls. Collapsed by default so
+        users who only want price checks aren't cluttered."""
+        if self.macro_expanded:
+            self.macro_panel.pack_forget()
+            self.macro_expanded = False
+            self.macro_toggle_btn.config(
+                text="▸  Macro Builder  (click to expand)")
+        else:
+            self.macro_panel.pack(fill='both', expand=True, pady=(2, 0),
+                                  before=self.log_label)
+            self.macro_expanded = True
+            self.macro_toggle_btn.config(text="▾  Macro Builder")
 
     def _log(self, msg):
         self.console.insert('end', f"{msg}\n")
@@ -332,7 +393,7 @@ class AuctionBuilder:
     def _show_help(self):
         """Show help/about dialog."""
         help_win = tk.Toplevel(self.root)
-        help_win.title("Help — EQ Auction Builder")
+        help_win.title("Help — EQ Auction Forge")
         help_win.configure(bg='#1a1a1a')
         help_win.geometry("500x520")
         help_win.attributes('-topmost', True)
@@ -342,8 +403,8 @@ class AuctionBuilder:
             font=('Consolas', 9), wrap='word', padx=10, pady=10)
         txt.pack(fill='both', expand=True, padx=10, pady=10)
 
-        help_text = """EQ Auction Builder v4
-by Wangel
+        help_text = """EQ Auction Forge v1
+by wangel
 
 HOW TO USE:
 
@@ -697,6 +758,10 @@ Pricing: tlp-auctions.com"""
             messagebox.showerror("Error", "Invalid page")
             return
 
+        # Make sure the output is visible when the user generates
+        if not self.macro_expanded:
+            self._toggle_macro_panel()
+
         prefix = self.prefix_var.get()
         suffix = self.suffix_var.get()
         max_line = 255
@@ -742,36 +807,54 @@ Pricing: tlp-auctions.com"""
                 line += f" {suffix}"
             all_lines.append(line)
 
-        # Pack into buttons (5 lines each)
+        # Pack into buttons (max_lines_btn lines each), filling
+        # BUTTONS_PER_PAGE buttons per page, then rolling to the next page.
+        # EQ socials stop at MAX_PAGE — anything past that is dropped.
         out = []
         btn = 1
-        for bs in range(0, len(all_lines), max_lines_btn):
-            bl = all_lines[bs:bs + max_lines_btn]
-            if btn > 10:
+        buttons_written = 0
+        overflow = 0
+        button_chunks = list(range(0, len(all_lines), max_lines_btn))
+        for bs in button_chunks:
+            if btn > BUTTONS_PER_PAGE:
                 page += 1
                 btn = 1
-            out.append(f"Page{page}Button{btn}Name=WTS{(bs // max_lines_btn) + 1}")
+            if page > MAX_PAGE:
+                overflow = len(button_chunks) - buttons_written
+                break
+            bl = all_lines[bs:bs + max_lines_btn]
+            out.append(f"Page{page}Button{btn}Name=WTS{buttons_written + 1}")
             out.append(f"Page{page}Button{btn}Color=0")
             for ln, line in enumerate(bl, 1):
                 out.append(f"Page{page}Button{btn}Line{ln}={line}")
             out.append("")
             btn += 1
+            buttons_written += 1
 
         self.output_text.delete('1.0', 'end')
         self.output_text.insert('1.0', '\n'.join(out))
 
-        # Preview
+        # Preview (only the buttons that actually fit)
         self.output_text.insert('end', '\n--- PREVIEW ---\n')
-        bn = 0
-        for bs in range(0, len(all_lines), max_lines_btn):
-            bn += 1
+        for bn, bs in enumerate(button_chunks[:buttons_written], 1):
             bl = all_lines[bs:bs + max_lines_btn]
             self.output_text.insert('end', f"\nButton {bn}:\n")
             for i, line in enumerate(bl, 1):
                 clean = line.replace(DC2, '|')
                 self.output_text.insert('end', f"  L{i} ({len(line)}c): {clean}\n")
 
-        self._log(f"Generated {len(all_lines)} lines across {bn} button(s)")
+        lines_written = min(len(all_lines), buttons_written * max_lines_btn)
+        self._log(f"Generated {lines_written} lines across {buttons_written} button(s)")
+
+        if overflow:
+            messagebox.showwarning(
+                "Too many items",
+                f"Your list is too big to fit in EQ's socials — "
+                f"Page {MAX_PAGE} is the last page.\n\n"
+                f"{overflow} macro button(s) didn't fit and were left out.\n\n"
+                f"Lower the starting Page number, or split your items "
+                f"across more than one character.")
+            self._log(f"WARNING: {overflow} button(s) past Page {MAX_PAGE} were dropped")
 
     def _copy(self):
         content = self.output_text.get('1.0', 'end').strip()
@@ -789,7 +872,7 @@ Pricing: tlp-auctions.com"""
 
 
 def main():
-    parser = argparse.ArgumentParser(description="EQ Auction Macro Builder v4")
+    parser = argparse.ArgumentParser(description="EQ Auction Forge v1 - wangel")
     parser.add_argument("--db", default=ITEMS_DB)
     parser.add_argument("--server", default=SERVER)
     args = parser.parse_args()

@@ -1,31 +1,47 @@
-# EQ Auction Builder
+# EQ Auction Forge
 
-Generate EverQuest social macros with **clickable item links** for EC Tunnel trading. No more manually shift-clicking items into macros — search your inventory, set prices, and export directly to your character INI file.
+Generate EverQuest social macros with **clickable item links** for EC Tunnel trading. No more manually shift-clicking items into macros — search your inventory, set prices, and export directly to your character INI file. Or just use it as a quick **price-check** tool.
 
-![EQ Auction Builder Screenshot](screenshots/main.png)
+![EQ Auction Forge Screenshot](screenshots/main.png)
+
+## Download
+
+**Just want to use it? (no Python needed)**
+
+1. Go to the [Releases page](https://github.com/wangel/EQ_Auction_Forge/releases)
+2. Download `EQ_Auction_Forge_vX.Y.Z_Windows.zip`
+3. Unzip it anywhere — your Desktop or Downloads is fine (avoid `Program Files`)
+4. Keep `EQ_Auction_Forge.exe` and `items.txt.gz` **in the same folder**
+5. Double-click `EQ_Auction_Forge.exe`
+
+**Developers / other platforms:** see [Running from source](#running-from-source) below.
 
 ## Features
 
 - **Item Link Generation** — Generates proper EQ item links with clickable purple text using pre-computed link hashes from the [items.sodeq.org](https://items.sodeq.org) database
 - **Inventory Integration** — Load your `/outputfile inventory` dump to see only items you actually have
 - **Price Checking** — Fetch real-time pricing from [TLP Auctions](https://www.tlp-auctions.com) with median-based pricing (more accurate than averages)
+- **Quick price-check mode** — The macro-building controls collapse out of the way, so you can use it purely to look up prices
 - **Auto-Packing** — Automatically fits as many items per line as possible while staying under EQ's 255-character limit, with up to 5 lines per macro button
+- **Full socials support** — Spreads macros across all 12 buttons per page, up to Page 10, and warns you if your list is too big to fit
 - **Krono Pricing** — High-value items are automatically formatted in Krono (e.g., `2kr 500pp`)
 - **Direct INI Writing** — Write macros directly to your character INI file with automatic backup
 - **Save/Load** — Save your auction lists to JSON for quick reloading
 
-## Requirements
+## Running from source
 
-- Python 3.8+
-- No external dependencies (stdlib only — tkinter, json, gzip, csv, urllib)
+### Requirements
+
+- Python 3.8+ with **tkinter** (included in the official [python.org](https://www.python.org/downloads/) installer on Windows/macOS; on Linux install `python3-tk`)
+- No third-party packages — standard library only (see [requirements.txt](requirements.txt))
 - `items.txt.gz` item database (included, sourced from [items.sodeq.org](https://items.sodeq.org))
 
-## Installation
+### Install & run
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/eq-auction-builder.git
-cd eq-auction-builder
-python eq_auction_builder.py
+git clone https://github.com/wangel/EQ_Auction_Forge.git
+cd EQ_Auction_Forge
+python EQ-Auction_Forge.py
 ```
 
 No `pip install` needed — runs entirely on Python's standard library.
@@ -35,21 +51,21 @@ No `pip install` needed — runs entirely on Python's standard library.
 ### Quick Start
 
 1. In-game: `/outputfile inventory` to dump your inventory
-2. Run: `python eq_auction_builder.py`
+2. Launch the app (double-click the `.exe`, or `python EQ-Auction_Forge.py`)
 3. Click **Load Inventory** and select your inventory file
 4. Check **Inv only** to filter to items you own
 5. **Double-click** items to add them to your auction list
 6. Click **PC All** to price check everything via TLP Auctions
 7. Adjust prices as needed (select item → type price → **Set Price**)
-8. Click **Generate** to build the macros
+8. Expand **Macro Builder**, then click **Generate** to build the macros
 9. Click **Write to INI** to write directly to your character file
 
 ### Command Line Options
 
 ```bash
-python eq_auction_builder.py                          # Default
-python eq_auction_builder.py --server Frostreaver     # Set server for price checks
-python eq_auction_builder.py --db /path/to/items.txt.gz  # Custom item database
+python EQ-Auction_Forge.py                              # Default
+python EQ-Auction_Forge.py --server Frostreaver         # Set server for price checks
+python EQ-Auction_Forge.py --db /path/to/items.txt.gz   # Custom item database
 ```
 
 ### Supported Servers (Price Checking)
@@ -65,15 +81,11 @@ EQ item links use a special character (DC2, hex `0x12`) as a delimiter around th
 
 ## Item Database
 
-The `items.txt.gz` file contains item data from [items.sodeq.org](https://items.sodeq.org). To update it:
+The `items.txt.gz` file contains item data from [items.sodeq.org](https://items.sodeq.org). On first run it is extracted to a per-user cache folder (`%LOCALAPPDATA%\EQAuctionForge\items.txt` on Windows). To update it:
 
 1. Download the latest item dump from [items.sodeq.org](https://items.sodeq.org)
-2. Replace `items.txt.gz` in the project folder
-3. Delete `items.txt` if it exists (will be re-extracted on next run)
-
-## Screenshots
-
-*Add your screenshots to a `screenshots/` folder*
+2. Replace `items.txt.gz` next to the app
+3. Delete the cached `items.txt` in `%LOCALAPPDATA%\EQAuctionForge\` (it will be re-extracted on next run)
 
 ## Credits
 
