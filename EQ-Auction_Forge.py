@@ -21,7 +21,6 @@ import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
 from urllib.request import urlopen, Request
-from urllib.parse import quote
 
 import ssl
 
@@ -56,8 +55,10 @@ def _cache_dir():
 ITEMS_DB = os.path.join(_app_dir(), "items.txt.gz")
 SERVER = "Frostreaver"
 # Servers selectable in the UI dropdown. The box is editable, so a server
-# not listed here can still be typed in for price checks.
-SERVERS = ["Frostreaver", "Teek", "Oakwynd", "Yelinak", "Mischief", "Thornblade"]
+# not listed here can still be typed in for price checks. Only Frostreaver is
+# listed for now — once a TLP gets Bazaar, tlp-auctions data dries up. Add new
+# TLPs (or EQ Legends) here when they launch.
+SERVERS = ["Frostreaver"]
 _config = {"server": "Frostreaver"}
 API_BASE = "https://api.tlp-auctions.com"
 
@@ -72,11 +73,16 @@ _ssl_ctx.verify_mode = ssl.CERT_NONE
 
 
 def load_item_database(gz_path):
+    """Load the item DB. Returns (links, ids):
+      links: name -> itemlink (hash+name) for building clickable links
+      ids:   name -> item id (int) for the bulk price API
+    """
     items = {}
+    ids = {}
     txt_path = os.path.join(_cache_dir(), 'items.txt')
     if not os.path.isfile(txt_path):
         if not os.path.isfile(gz_path):
-            return items
+            return items, ids
         print(f"  Extracting {gz_path}...")
         with gzip.open(gz_path, 'rt', encoding='utf-8', errors='ignore') as f:
             with open(txt_path, 'w', encoding='utf-8') as out:
@@ -90,10 +96,13 @@ def load_item_database(gz_path):
                 link = row.get('itemlink', '').strip()
                 if name and link:
                     items[name] = link
+                    item_id = row.get('id', '').strip()
+                    if item_id.isdigit() and name not in ids:
+                        ids[name] = int(item_id)
             except Exception:
                 continue
     print(f"  {len(items)} items loaded")
-    return items
+    return items, ids
 
 
 def load_inventory(filepath):
@@ -134,87 +143,68 @@ def make_link(itemlink, item_name):
     return f"{DC2}{itemlink}{DC2}"
 
 
-def fetch_price(item_name, server=SERVER):
-    """Fetch average price from TLP Auctions API."""
-    try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept': 'application/json',
-            'Accept-Language': 'en-US,en;q=0.9',
-        }
+BULK_PRICE_LIMIT = 10  # API accepts up to 10 item ids per bulk request
+DEFAULT_KRONO_RATE = 4000  # fallback for kr display when the API reports 0
 
-        # Get krono price
-        kr_url = f"{API_BASE}/api/krono-prices/{server}"
-        req = Request(kr_url, headers=headers)
-        with urlopen(req, timeout=5, context=_ssl_ctx) as r:
-            kr_data = json.loads(r.read().decode())
-        krono_price = int(kr_data.get('averagePrice', 4000))
+_API_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+    'Accept': 'application/json',
+    'Content-Type': 'application/json',
+}
 
-        # Get item price
-        search = quote(item_name)
-        pc_url = f"{API_BASE}/api/prices/pricecheck?serverName={server}&searchTerm={search}"
-        req = Request(pc_url, headers=headers)
-        with urlopen(req, timeout=5, context=_ssl_ctx) as r:
-            data = json.loads(r.read().decode())
 
-        avg = data.get('sellAverage')
-        sales = data.get('recentSellSales', [])
+def format_plat_price(median_pp, krono_rate):
+    """Format an effective plat price as kr/pp using the server's krono rate.
 
-        # Get actual prices from recent sales (include krono sales)
-        recent_prices = []
-        for sale in sales:
-            pp = float(sale.get('platPrice', 0) or 0)
-            kr = float(sale.get('kronoPrice', 0) or 0)
-            total_pp = int(pp + (kr * krono_price))
-            if total_pp > 0:
-                recent_prices.append(total_pp)
-
-        if not recent_prices:
-            return None, "No price data"
-
-        # Calculate median (more reliable than average with outliers)
-        sorted_prices = sorted(recent_prices)
-        mid = len(sorted_prices) // 2
-        if len(sorted_prices) % 2 == 0:
-            median_pp = (sorted_prices[mid - 1] + sorted_prices[mid]) // 2
-        else:
-            median_pp = sorted_prices[mid]
-
-        avg_pp = int(float(avg)) if avg else median_pp
-
-        # Format median as the suggested price (use kr for expensive items)
-        kr = median_pp // krono_price
-        pp = median_pp % krono_price
+    The bulk API already folds krono-priced sales into plat, so median_pp is a
+    straight plat value. We only use krono_rate to display big numbers in kr.
+    """
+    median_pp = int(round(median_pp))
+    if krono_rate and krono_rate > 0:
+        kr = int(median_pp // krono_rate)
+        rem = int(median_pp % krono_rate)
         if kr >= 1:
-            price = f"{kr}kr" if pp < 500 else f"{kr}kr {pp}pp"
-        else:
-            price = f"{median_pp}pp"
+            return f"{kr}kr" if rem < 500 else f"{kr}kr {rem}pp"
+    return f"{median_pp}pp"
 
-        # Build detail string showing recent prices in kr or pp
-        def fmt(p):
-            k = p // krono_price
-            r = p % krono_price
-            if k >= 1:
-                return f"{k}kr{f' {r}pp' if r >= 500 else ''}"
-            return f"{p}pp"
 
-        prices_str = ", ".join(fmt(p) for p in sorted_prices)
-        detail = f"Median: {fmt(median_pp)} | Recent: {prices_str} ({len(sales)} sales)"
-        return price, detail
+def fetch_prices_bulk(item_ids, server=SERVER):
+    """POST a batch of item ids (max 10) to the bulk price endpoint.
+
+    Returns (results, krono_rate, error):
+      results:    dict of itemId -> {medianPlatPrice, sampleSize, hasData, item}
+      krono_rate: plat per krono on this server (0 if unknown)
+      error:      error string, or None on success
+    """
+    ids = list(item_ids)[:BULK_PRICE_LIMIT]
+    if not ids:
+        return {}, 0, None
+    try:
+        url = f"{API_BASE}/api/prices/bulk"
+        body = json.dumps({"serverName": server, "itemIds": ids}).encode()
+        req = Request(url, data=body, headers=_API_HEADERS, method='POST')
+        with urlopen(req, timeout=10, context=_ssl_ctx) as r:
+            data = json.loads(r.read().decode())
+        krono_rate = float(data.get('kronoRate') or 0)
+        if krono_rate <= 0:
+            krono_rate = DEFAULT_KRONO_RATE  # API didn't report a rate; use fallback
+        results = {it.get('itemId'): it for it in data.get('items', [])}
+        return results, krono_rate, None
     except Exception as e:
-        return None, f"Error: {e}"
+        return {}, 0, f"Error: {e}"
 
 
 class AuctionBuilder:
     def __init__(self, db_path=ITEMS_DB):
         self.db_path = db_path
         self.item_db = {}
+        self.item_ids = {}
         self.inventory = []
         self.auction_items = []  # list of {'name', 'price'}
         self.inv_loaded = False
 
         self.root = tk.Tk()
-        self.root.title("EQ Auction Forge v1.1.0 — by wangel")
+        self.root.title("EQ Auction Forge v1.2.0 — by wangel")
         self.root.configure(bg='#1a1a1a')
         self.root.geometry("1000x800")
         self._build_ui()
@@ -437,7 +427,7 @@ class AuctionBuilder:
             font=('Consolas', 9), wrap='word', padx=10, pady=10)
         txt.pack(fill='both', expand=True, padx=10, pady=10)
 
-        help_text = """EQ Auction Forge v1.1.0
+        help_text = """EQ Auction Forge v1.2.0
 by wangel
 
 HOW TO USE:
@@ -483,7 +473,7 @@ Pricing: tlp-auctions.com"""
                    command=help_win.destroy).pack(pady=(0, 10))
 
     def _load_db(self):
-        self.item_db = load_item_database(self.db_path)
+        self.item_db, self.item_ids = load_item_database(self.db_path)
         if self.item_db:
             self.db_count_var.set(f"{len(self.item_db)} items in DB")
             self.status_var.set("Ready")
@@ -575,8 +565,17 @@ Pricing: tlp-auctions.com"""
             self.auction_items[idx]['price'] = price
             self.auc_tree.item(sel[0], values=(self.auction_items[idx]['name'], price))
 
+    def _result_to_price(self, name, res, krono_rate):
+        """Turn a single bulk-API result into (price, detail) strings."""
+        if not res or not res.get('hasData'):
+            return None, "No price data"
+        median = res.get('medianPlatPrice', 0)
+        samples = res.get('sampleSize', 0)
+        price = format_plat_price(median, krono_rate)
+        return price, f"Median: {price} ({samples} sales)"
+
     def _price_check(self):
-        """Price check selected item in auction list."""
+        """Price check the selected item via the bulk endpoint (single id)."""
         sel = self.auc_tree.selection()
         if not sel:
             sel = self.item_tree.selection()
@@ -586,28 +585,54 @@ Pricing: tlp-auctions.com"""
         else:
             name = self.auc_tree.item(sel[0])['values'][0]
 
+        item_id = self.item_ids.get(name)
+        if item_id is None:
+            self._log(f"  {name}: no item id in DB")
+            return
+
         self._log(f"Checking price: {name}...")
         self.root.update()
 
         def do_check():
-            price, detail = fetch_price(name, _config["server"])
+            results, krono_rate, err = fetch_prices_bulk([item_id], _config["server"])
+            if err:
+                self.root.after(0, lambda: self._on_price_result(name, None, err))
+                return
+            price, detail = self._result_to_price(name, results.get(item_id), krono_rate)
             self.root.after(0, lambda: self._on_price_result(name, price, detail))
 
         threading.Thread(target=do_check, daemon=True).start()
 
     def _price_check_all(self):
-        """Price check all items in auction list."""
+        """Price check all auction items, 10 ids per bulk request."""
         if not self.auction_items:
             return
-        self._log("Price checking all items...")
+        self._log(f"Price checking {len(self.auction_items)} items (10 per batch)...")
+
+        # Pair each auction row with its item id, flagging any missing from the DB.
+        targets = []  # (idx, name, item_id)
+        for idx, item in enumerate(self.auction_items):
+            item_id = self.item_ids.get(item['name'])
+            if item_id is None:
+                self.root.after(0, lambda n=item['name']:
+                                self._log(f"  {n}: no item id in DB"))
+            else:
+                targets.append((idx, item['name'], item_id))
 
         def do_all():
-            for i, item in enumerate(self.auction_items):
-                price, detail = fetch_price(item["name"], _config["server"])
-                self.root.after(0, lambda n=item['name'], p=price, d=detail, idx=i:
-                self._on_price_result_update(n, p, d, idx))
-                import time
-                time.sleep(0.5)  # Don't spam the API
+            server = _config["server"]
+            for start in range(0, len(targets), BULK_PRICE_LIMIT):
+                batch = targets[start:start + BULK_PRICE_LIMIT]
+                results, krono_rate, err = fetch_prices_bulk(
+                    [t[2] for t in batch], server)
+                if err:
+                    self.root.after(0, lambda e=err: self._log(f"  {e}"))
+                    continue
+                for idx, name, item_id in batch:
+                    price, detail = self._result_to_price(
+                        name, results.get(item_id), krono_rate)
+                    self.root.after(0, lambda n=name, p=price, d=detail, i=idx:
+                                    self._on_price_result_update(n, p, d, i))
             self.root.after(0, lambda: self._log("Price check complete!"))
 
         threading.Thread(target=do_all, daemon=True).start()
@@ -906,7 +931,7 @@ Pricing: tlp-auctions.com"""
 
 
 def main():
-    parser = argparse.ArgumentParser(description="EQ Auction Forge v1.1.0 - wangel")
+    parser = argparse.ArgumentParser(description="EQ Auction Forge v1.2.0 - wangel")
     parser.add_argument("--db", default=ITEMS_DB)
     parser.add_argument("--server", default=SERVER)
     args = parser.parse_args()
