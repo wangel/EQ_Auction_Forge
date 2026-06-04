@@ -35,3 +35,4 @@ Thumbs.db
 # Screenshots (keep folder, ignore large files)
 screenshots/*.png
 !screenshots/.gitkeep
+!screenshots/main.png
