@@ -100,4 +100,4 @@ MIT License — see [LICENSE](LICENSE)
 
 If you find this useful, consider buying me a coffee!
 
-[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/YOUR_KOFI)
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/wangel)
