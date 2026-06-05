@@ -19,8 +19,10 @@ import argparse
 import tempfile
 import threading
 import tkinter as tk
+from datetime import datetime, timezone
 from tkinter import ttk, filedialog, messagebox, scrolledtext
 from urllib.request import urlopen, Request
+from urllib.parse import urlencode
 
 import ssl
 
@@ -212,6 +214,57 @@ def fetch_prices_bulk(item_ids, server=SERVER):
         return {}, 0, f"Error: {e}"
 
 
+RECENT_SALES_LIMIT = 8  # postings shown by the "Recent Postings" reference lookup
+
+
+def fetch_recent_sales(item_name, server=SERVER, limit=RECENT_SALES_LIMIT):
+    """Fetch the most recent individual postings for ONE item, newest first.
+
+    Uses the /api/sales feed with an exact-name match (so only this item's
+    postings come back). Returns (sales, error):
+      sales: list of {datetime, transactionType, platPrice, kronoPrice, auctioneer}
+      error: error string, or None on success
+    """
+    try:
+        qs = urlencode({'searchTerm': item_name, 'exactMatch': 'true',
+                        'serverName': server, 'pageSize': limit})
+        url = f"{API_BASE}/api/sales?{qs}"
+        req = Request(url, headers=_API_HEADERS, method='GET')
+        with urlopen(req, timeout=10, context=_ssl_ctx) as r:
+            data = json.loads(r.read().decode())
+        return data.get('items', [])[:limit], None
+    except Exception as e:
+        return [], f"Error: {e}"
+
+
+def format_sale_age(iso_str):
+    """Turn an ISO UTC timestamp (e.g. 2026-06-05T17:37:57Z) into a short
+    local-time + relative-age string for the postings list."""
+    try:
+        dt = datetime.strptime(iso_str, '%Y-%m-%dT%H:%M:%SZ').replace(
+            tzinfo=timezone.utc)
+    except Exception:
+        return iso_str or "?"
+    local = dt.astimezone()
+    secs = int((datetime.now(timezone.utc) - dt).total_seconds())
+    if secs < 3600:
+        ago = f"{max(secs // 60, 0)}m ago"
+    elif secs < 86400:
+        ago = f"{secs // 3600}h ago"
+    else:
+        ago = f"{secs // 86400}d ago"
+    return f"{local.strftime('%m/%d %I:%M%p')} ({ago})"
+
+
+def format_posting_price(plat, krono):
+    """Format one posting's price. A posting is in either plat or krono."""
+    if krono and krono > 0:
+        return f"{krono:g}kr"
+    if plat and plat > 0:
+        return f"{int(plat)}pp"
+    return "—"
+
+
 class AuctionBuilder:
     def __init__(self, db_path=ITEMS_DB):
         self.db_path = db_path
@@ -222,7 +275,7 @@ class AuctionBuilder:
         self.inv_loaded = False
 
         self.root = tk.Tk()
-        self.root.title("EQ Auction Forge v1.3.0 — by wangel")
+        self.root.title("EQ Auction Forge v1.3.1 — by wangel")
         self.root.configure(bg='#1a1a1a')
         self.root.geometry("1000x800")
         self._build_ui()
@@ -275,7 +328,7 @@ class AuctionBuilder:
 
         lf = ttk.Frame(left)
         lf.pack(fill='x')
-        ttk.Label(lf, text="Items (double-click to add)").pack(side='left')
+        ttk.Label(lf, text="Items (double-click, or select + Add)").pack(side='left')
         self.item_count_var = tk.StringVar()
         ttk.Label(lf, textvariable=self.item_count_var, foreground='#666666').pack(side='right')
 
@@ -291,17 +344,34 @@ class AuctionBuilder:
         ttk.Checkbutton(ff, text="Inv only", variable=self.inv_only_var,
                         command=self._apply_filter).pack(side='left', padx=10)
 
+        # Tree + scrollbar live in their own frame so a button row can sit
+        # below them (mixing pack sides in one parent gets messy otherwise).
+        tree_frame = ttk.Frame(left)
+        tree_frame.pack(side='top', fill='both', expand=True)
         cols = ('name', 'location')
-        self.item_tree = ttk.Treeview(left, columns=cols, show='headings', height=20)
+        # selectmode='extended' lets the user shift/ctrl-click a range of items
+        # and add them all at once instead of double-clicking each.
+        self.item_tree = ttk.Treeview(tree_frame, columns=cols, show='headings',
+                                      height=20, selectmode='extended')
         self.item_tree.heading('name', text='Item Name')
         self.item_tree.heading('location', text='Location')
         self.item_tree.column('name', width=300)
         self.item_tree.column('location', width=120)
-        sb = ttk.Scrollbar(left, orient='vertical', command=self.item_tree.yview)
+        sb = ttk.Scrollbar(tree_frame, orient='vertical', command=self.item_tree.yview)
         self.item_tree.configure(yscrollcommand=sb.set)
         self.item_tree.pack(side='left', fill='both', expand=True)
         sb.pack(side='right', fill='y')
         self.item_tree.bind('<Double-1>', self._add_to_auction)
+
+        # Actions on the item list (work on the current selection — one or many)
+        ibf = ttk.Frame(left)
+        ibf.pack(side='top', fill='x', pady=3)
+        ttk.Button(ibf, text="Add Selected →",
+                   command=self._add_selected_to_auction).pack(side='left')
+        ttk.Button(ibf, text="Price Check",
+                   command=self._price_check_left).pack(side='left', padx=3)
+        ttk.Button(ibf, text="Recent Postings",
+                   command=self._recent_postings).pack(side='left', padx=3)
 
         # --- Right: Auction builder ---
         right = ttk.Frame(paned)
@@ -333,6 +403,12 @@ class AuctionBuilder:
         ttk.Button(pf, text="Set Price", command=self._set_price).pack(side='left', padx=3)
         ttk.Button(pf, text="Price Check", command=self._price_check).pack(side='left', padx=3)
         ttk.Button(pf, text="PC All", command=self._price_check_all).pack(side='left', padx=3)
+        # Undercut: shave this % off every price-checked median before it's set,
+        # so your prices land just under the going rate. 0 = use the median as-is.
+        ttk.Label(pf, text="Undercut:").pack(side='left', padx=(12, 2))
+        self.undercut_var = tk.StringVar(value="0")
+        ttk.Entry(pf, textvariable=self.undercut_var, width=4).pack(side='left')
+        ttk.Label(pf, text="%").pack(side='left')
 
         # Auction-list management (always visible)
         lbf = ttk.Frame(right)
@@ -446,18 +522,26 @@ class AuctionBuilder:
             font=('Consolas', 9), wrap='word', padx=10, pady=10)
         txt.pack(fill='both', expand=True, padx=10, pady=10)
 
-        help_text = """EQ Auction Forge v1.3.0
+        help_text = """EQ Auction Forge v1.3.1
 by wangel
 
 HOW TO USE:
 
 1. In-game: /outputfile inventory
 2. Click "Load Inventory" and select the file
-3. Double-click items to add to your auction list
+3. Add items to your auction list:
+   - Double-click an item, OR
+   - Shift/Ctrl-click several, then "Add Selected"
 4. Set prices:
    - Type a price, select an item, click "Set Price"
    - Or click "PC All" to auto-fetch prices from
      TLP Auctions (uses median, not average)
+   - Set "Undercut %" to shave that % off every
+     price-checked median (e.g. 5 = 5% under)
+   - "Price Check" under the items list checks the
+     selected inventory item(s) without adding them
+   - "Recent Postings" lists the last few sales of
+     one item, with time, for a quick reference
 5. Click "Generate" to build the macros
 6. Click "Write to INI" to save directly to your
    character INI file (auto-backup created)
@@ -517,7 +601,8 @@ Pricing: tlp-auctions.com"""
         count = 0
 
         if inv_only and self.inv_loaded:
-            for item in self.inventory:
+            # Sort alphabetically so items are easy to scan/find.
+            for item in sorted(self.inventory, key=lambda i: i['name'].lower()):
                 name = item['name']
                 if search and search not in name.lower():
                     continue
@@ -530,29 +615,41 @@ Pricing: tlp-auctions.com"""
             if not search or len(search) < 2:
                 self.item_count_var.set("(type 2+ chars)")
                 return
-            for name in self.item_db:
-                if search in name.lower():
-                    loc = ""
-                    for inv in self.inventory:
-                        if inv['name'] == name:
-                            loc = inv['location']
-                            break
-                    self.item_tree.insert('', 'end', values=(name, loc))
-                    count += 1
-                    if count >= 200:
-                        break
+            # Collect matches first, then sort alphabetically before showing.
+            matches = sorted((n for n in self.item_db if search in n.lower()),
+                             key=str.lower)
+            inv_loc = {inv['name']: inv['location'] for inv in self.inventory}
+            for name in matches[:200]:
+                self.item_tree.insert('', 'end', values=(name, inv_loc.get(name, "")))
+                count += 1
         self.item_count_var.set(f"({count})")
 
-    def _add_to_auction(self, event):
+    def _add_to_auction(self, event=None):
+        """Double-click handler — add whatever is selected (one or many)."""
+        self._add_rows_to_auction(self.item_tree.selection())
+
+    def _add_selected_to_auction(self):
+        """'Add Selected' button — add every highlighted item at once, so the
+        user can shift/ctrl-select a batch instead of double-clicking each."""
         sel = self.item_tree.selection()
         if not sel:
+            messagebox.showinfo("Add Selected", "Select one or more items first.")
             return
-        name = self.item_tree.item(sel[0])['values'][0]
-        if name not in self.item_db:
-            return
+        self._add_rows_to_auction(sel)
+
+    def _add_rows_to_auction(self, sel):
+        """Add the given item-tree rows to the auction list."""
         price = self.price_var.get() or ""
-        self.auction_items.append({'name': name, 'price': price})
-        self.auc_tree.insert('', 'end', values=(name, price))
+        added = 0
+        for iid in sel:
+            name = str(self.item_tree.item(iid)['values'][0])
+            if name not in self.item_db:
+                continue
+            self.auction_items.append({'name': name, 'price': price})
+            self.auc_tree.insert('', 'end', values=(name, price))
+            added += 1
+        if added > 1:
+            self._log(f"Added {added} items to auction")
 
     def _remove_from_auction(self, event):
         sel = self.auc_tree.selection()
@@ -584,14 +681,33 @@ Pricing: tlp-auctions.com"""
             self.auction_items[idx]['price'] = price
             self.auc_tree.item(sel[0], values=(self.auction_items[idx]['name'], price))
 
-    def _result_to_price(self, name, res, krono_rate):
-        """Turn a single bulk-API result into (price, detail) strings."""
+    def _undercut_pct(self):
+        """Read the Undercut % box. Returns a float in [0, 100); 0 if blank or
+        invalid, so a bad value just means 'no undercut' rather than an error."""
+        raw = self.undercut_var.get().strip().rstrip('%')
+        if not raw:
+            return 0.0
+        try:
+            v = float(raw)
+        except ValueError:
+            return 0.0
+        return v if 0 <= v < 100 else 0.0
+
+    def _result_to_price(self, name, res, krono_rate, undercut=0.0):
+        """Turn a single bulk-API result into (price, detail) strings.
+
+        When undercut > 0, the price is the median shaved by that percent so it
+        lands just under the going rate; detail still shows the raw median."""
         if not res or not res.get('hasData'):
             return None, "No price data"
         median = res.get('medianPlatPrice', 0)
         samples = res.get('sampleSize', 0)
-        price = format_plat_price(median, krono_rate)
-        return price, f"Median: {price} ({samples} sales)"
+        median_str = format_plat_price(median, krono_rate)
+        if undercut:
+            price = format_plat_price(median * (1 - undercut / 100.0), krono_rate)
+            detail = f"Median: {median_str} ({samples} sales) -> -{undercut:g}% = {price}"
+            return price, detail
+        return median_str, f"Median: {median_str} ({samples} sales)"
 
     def _price_check(self):
         """Price check the selected item via the bulk endpoint (single id)."""
@@ -611,13 +727,15 @@ Pricing: tlp-auctions.com"""
 
         self._log(f"Checking price: {name}...")
         self.root.update()
+        undercut = self._undercut_pct()
 
         def do_check():
             results, krono_rate, err = fetch_prices_bulk([item_id], _config["server"])
             if err:
                 self.root.after(0, lambda: self._on_price_result(name, None, err))
                 return
-            price, detail = self._result_to_price(name, results.get(item_id), krono_rate)
+            price, detail = self._result_to_price(
+                name, results.get(item_id), krono_rate, undercut)
             self.root.after(0, lambda: self._on_price_result(name, price, detail))
 
         threading.Thread(target=do_check, daemon=True).start()
@@ -626,7 +744,10 @@ Pricing: tlp-auctions.com"""
         """Price check all auction items, 10 ids per bulk request."""
         if not self.auction_items:
             return
-        self._log(f"Price checking {len(self.auction_items)} items (10 per batch)...")
+        undercut = self._undercut_pct()
+        note = f" (undercut {undercut:g}%)" if undercut else ""
+        self._log(f"Price checking {len(self.auction_items)} items "
+                  f"(10 per batch){note}...")
 
         # Pair each auction row with its item id, flagging any missing from the DB.
         targets = []  # (idx, name, item_id)
@@ -649,7 +770,7 @@ Pricing: tlp-auctions.com"""
                     continue
                 for idx, name, item_id in batch:
                     price, detail = self._result_to_price(
-                        name, results.get(item_id), krono_rate)
+                        name, results.get(item_id), krono_rate, undercut)
                     self.root.after(0, lambda n=name, p=price, d=detail, i=idx:
                                     self._on_price_result_update(n, p, d, i))
             self.root.after(0, lambda: self._log("Price check complete!"))
@@ -670,6 +791,121 @@ Pricing: tlp-auctions.com"""
             if idx < len(children):
                 self.auc_tree.item(children[idx],
                                    values=(self.auction_items[idx]['name'], price))
+
+    def _price_check_left(self):
+        """Price check the item(s) selected in the left/inventory list. Results
+        are logged (and put in the Price box if a single item is selected); this
+        does NOT touch the auction list, so you can check before adding."""
+        sel = self.item_tree.selection()
+        if not sel:
+            messagebox.showinfo("Price Check", "Select one or more items first.")
+            return
+        targets = []  # (name, item_id)
+        for iid in sel:
+            name = str(self.item_tree.item(iid)['values'][0])
+            item_id = self.item_ids.get(name)
+            if item_id is None:
+                self._log(f"  {name}: no item id in DB")
+            else:
+                targets.append((name, item_id))
+        if not targets:
+            return
+        undercut = self._undercut_pct()
+        self._log(f"Price checking {len(targets)} item(s) from inventory...")
+
+        def do_check():
+            server = _config["server"]
+            for start in range(0, len(targets), BULK_PRICE_LIMIT):
+                batch = targets[start:start + BULK_PRICE_LIMIT]
+                results, krono_rate, err = fetch_prices_bulk(
+                    [t[1] for t in batch], server)
+                if err:
+                    self.root.after(0, lambda e=err: self._log(f"  {e}"))
+                    continue
+                for name, item_id in batch:
+                    price, detail = self._result_to_price(
+                        name, results.get(item_id), krono_rate, undercut)
+                    # Single selection: also drop the price into the box so it's
+                    # ready to use when adding the item.
+                    setbox = price if len(targets) == 1 else None
+                    self.root.after(0, lambda n=name, d=detail, p=setbox:
+                                    self._on_left_price_result(n, d, p))
+            self.root.after(0, lambda: self._log("Price check complete!"))
+
+        threading.Thread(target=do_check, daemon=True).start()
+
+    def _on_left_price_result(self, name, detail, price):
+        self._log(f"  {name}: {detail}")
+        if price:
+            self.price_var.set(price)
+
+    def _selected_single_name(self):
+        """Name of the one item to act on for single-item lookups. Prefers the
+        left/inventory selection, then the auction selection. Returns None if
+        nothing is selected."""
+        sel = self.item_tree.selection()
+        if sel:
+            return str(self.item_tree.item(sel[0])['values'][0])
+        sel = self.auc_tree.selection()
+        if sel:
+            return str(self.auc_tree.item(sel[0])['values'][0])
+        return None
+
+    def _recent_postings(self):
+        """Show the last few individual postings for ONE selected item, as a
+        quick price reference. Works on a single item (left or auction list)."""
+        name = self._selected_single_name()
+        if not name:
+            messagebox.showinfo("Recent Postings",
+                                "Select an item (in either list) first.")
+            return
+        server = _config["server"]
+        self._log(f"Fetching recent postings: {name}...")
+
+        def do_fetch():
+            sales, err = fetch_recent_sales(name, server)
+            self.root.after(0, lambda: self._show_recent_postings(name, sales, err))
+
+        threading.Thread(target=do_fetch, daemon=True).start()
+
+    def _show_recent_postings(self, name, sales, err):
+        """Pop up a small window listing recent postings (newest first)."""
+        if err:
+            self._log(f"  {err}")
+            messagebox.showerror("Recent Postings",
+                                 f"Couldn't fetch postings:\n{err}")
+            return
+        if not sales:
+            self._log(f"  {name}: no recent postings on {_config['server']}")
+            messagebox.showinfo("Recent Postings",
+                                f"No recent postings found for:\n{name}")
+            return
+
+        win = tk.Toplevel(self.root)
+        win.title(f"Recent Postings — {name}")
+        win.configure(bg='#1a1a1a')
+        win.geometry("520x320")
+        win.attributes('-topmost', True)
+
+        ttk.Label(win, text=name, foreground='#00ff00',
+                  font=('Consolas', 11, 'bold')).pack(anchor='w', padx=12, pady=(10, 0))
+        ttk.Label(win, text=f"Last {len(sales)} postings on {_config['server']} "
+                            f"(newest first)", foreground='#888888').pack(
+            anchor='w', padx=12, pady=(0, 4))
+
+        txt = scrolledtext.ScrolledText(win, bg='#2a2a2a', fg='#cccccc',
+                                        font=('Consolas', 9), wrap='none',
+                                        padx=10, pady=8)
+        txt.pack(fill='both', expand=True, padx=10, pady=(0, 8))
+        for s in sales:
+            when = format_sale_age(s.get('datetime', ''))
+            kind = 'WTB' if s.get('transactionType') else 'WTS'
+            price = format_posting_price(s.get('platPrice', 0), s.get('kronoPrice', 0))
+            who = s.get('auctioneer', '?')
+            txt.insert('end', f"{when:<22} {kind}  {price:>9}  {who}\n")
+        txt.config(state='disabled')
+
+        ttk.Button(win, text="Close", command=win.destroy).pack(pady=(0, 10))
 
     def _clear(self):
         self.auction_items.clear()
@@ -1025,7 +1261,7 @@ Pricing: tlp-auctions.com"""
 
 
 def main():
-    parser = argparse.ArgumentParser(description="EQ Auction Forge v1.3.0 - wangel")
+    parser = argparse.ArgumentParser(description="EQ Auction Forge v1.3.1 - wangel")
     parser.add_argument("--db", default=ITEMS_DB)
     args = parser.parse_args()
 
