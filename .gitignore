@@ -36,3 +36,4 @@ Thumbs.db
 screenshots/*.png
 !screenshots/.gitkeep
 !screenshots/main.png
+!screenshots/recent_postings.png
