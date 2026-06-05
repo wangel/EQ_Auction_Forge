@@ -66,6 +66,24 @@ API_BASE = "https://api.tlp-auctions.com"
 BUTTONS_PER_PAGE = 12
 MAX_PAGE = 10
 
+# --- Character INI validation -------------------------------------------------
+# The character settings file is named like  YourChar_server.ini  and lives in
+# the EverQuest folder. Users routinely point the file picker at the wrong .ini,
+# which either does nothing useful or clobbers an unrelated config. These help us
+# catch the common mistakes before we write.
+
+# Known EQ files that are NOT the character settings INI (basename, lowercased).
+INI_BLOCKLIST = {
+    'eqclient.ini': "the global EverQuest client config",
+    'eqlsplayerdata.ini': "the login-server data file",
+    'eqhost.txt': "the server host list",
+}
+
+# Section headers that only appear in a real character settings INI. A valid
+# character file has at least one of these (we write into [Socials]).
+EQ_CHAR_SECTIONS = ('[socials]', '[hot buttons]', '[key mapping]',
+                    '[keymapping]', '[uisettings]', '[chatchannels]')
+
 # SSL context — their API cert doesn't match the hostname
 _ssl_ctx = ssl.create_default_context()
 _ssl_ctx.check_hostname = False
@@ -204,7 +222,7 @@ class AuctionBuilder:
         self.inv_loaded = False
 
         self.root = tk.Tk()
-        self.root.title("EQ Auction Forge v1.2.0 — by wangel")
+        self.root.title("EQ Auction Forge v1.3.0 — by wangel")
         self.root.configure(bg='#1a1a1a')
         self.root.geometry("1000x800")
         self._build_ui()
@@ -362,6 +380,7 @@ class AuctionBuilder:
         ttk.Label(bf2, textvariable=self.ini_var, foreground='#666666',
                   font=('Consolas', 8)).pack(side='left')
         self.ini_path = None
+        self._last_ini_dir = ''  # remembered between picks, so re-prompts land in the same folder
 
         # Output
         ttk.Label(self.macro_panel, text="INI Output:").pack(anchor='w', pady=(3, 0))
@@ -427,7 +446,7 @@ class AuctionBuilder:
             font=('Consolas', 9), wrap='word', padx=10, pady=10)
         txt.pack(fill='both', expand=True, padx=10, pady=10)
 
-        help_text = """EQ Auction Forge v1.2.0
+        help_text = """EQ Auction Forge v1.3.0
 by wangel
 
 HOW TO USE:
@@ -698,6 +717,83 @@ Pricing: tlp-auctions.com"""
         except Exception as e:
             messagebox.showerror("Error", f"Load failed: {e}")
 
+    def _validate_eq_char_ini(self, path):
+        """Sanity-check a chosen file before treating it as a character INI.
+
+        Returns (level, message):
+          'reject' - we're sure it's the wrong file (block it)
+          'warn'   - probably wrong, but let the user override
+          'ok'     - looks like a real character settings INI
+        """
+        base = os.path.basename(path)
+        name = base.lower()
+
+        if name in INI_BLOCKLIST:
+            return ('reject',
+                    f'"{base}" is {INI_BLOCKLIST[name]}, not a character file.\n\n'
+                    f'You want the file named like  YourChar_server.ini')
+
+        # UI_Charname_server.ini holds window layouts, not socials/macros.
+        if name.startswith('ui_'):
+            return ('reject',
+                    f'"{base}" is a UI layout file, not your character settings.\n\n'
+                    f'You want the same name WITHOUT the "UI_" prefix:\n'
+                    f'{base[3:]}')
+
+        # Peek at the contents for the tell-tale character sections.
+        try:
+            with open(path, 'r', encoding='latin-1') as f:
+                head = f.read(65536).lower()
+        except Exception as e:
+            return ('reject', f"Couldn't read that file:\n{e}")
+
+        if any(sec in head for sec in EQ_CHAR_SECTIONS):
+            return ('ok', "")
+
+        return ('warn',
+                f'"{base}" doesn\'t look like an EverQuest character INI — '
+                f'none of the usual sections ([Socials], [Hot Buttons], '
+                f'[Key Mapping]) were found.\n\n'
+                f'Character INIs are named like  YourChar_server.ini  and live '
+                f'in your EverQuest folder.\n\n'
+                f'Use it anyway?')
+
+    def _select_ini_file(self):
+        """Prompt for the character INI, re-prompting until a sane file is
+        chosen (or the user cancels). Returns a path or None."""
+        # Default the filter to *<server>*.ini so only this server's characters
+        # show up (e.g. *Frostreaver*.ini -> Serelle_frostreaver_CLR.ini). The
+        # match is case-insensitive in the Windows dialog. UI_*.ini files for
+        # this server still slip through the glob, but validation rejects those.
+        server = (self.server_var.get() or _config.get("server", "")).strip()
+        filetypes = []
+        if server:
+            filetypes.append((f"{server} characters", f"*{server}*.ini"))
+        filetypes += [("Character INI", "*_*.ini"),
+                      ("INI files", "*.ini"),
+                      ("All files", "*.*")]
+        while True:
+            path = filedialog.askopenfilename(
+                title="Select Character INI File  (YourChar_server.ini)",
+                initialdir=self._last_ini_dir or None,
+                filetypes=filetypes)
+            if not path:
+                return None
+
+            level, msg = self._validate_eq_char_ini(path)
+            if level == 'ok':
+                self._last_ini_dir = os.path.dirname(path)
+                return path
+            if level == 'reject':
+                self._last_ini_dir = os.path.dirname(path)
+                messagebox.showerror("Wrong file — pick again", msg)
+                continue  # loop back to the picker
+            # 'warn' — let the user override an uncertain pick
+            self._last_ini_dir = os.path.dirname(path)
+            if messagebox.askyesno("Doesn't look right", msg):
+                return path
+            # otherwise re-prompt
+
     def _write_ini(self):
         """Write generated macros directly to the EQ character INI file."""
         # Get the generated output
@@ -713,9 +809,7 @@ Pricing: tlp-auctions.com"""
 
         # Select INI file if not already selected
         if not self.ini_path:
-            path = filedialog.askopenfilename(
-                title="Select Character INI File",
-                filetypes=[("INI files", "*.ini"), ("All files", "*.*")])
+            path = self._select_ini_file()
             if not path:
                 return
             self.ini_path = path
@@ -931,7 +1025,7 @@ Pricing: tlp-auctions.com"""
 
 
 def main():
-    parser = argparse.ArgumentParser(description="EQ Auction Forge v1.2.0 - wangel")
+    parser = argparse.ArgumentParser(description="EQ Auction Forge v1.3.0 - wangel")
     parser.add_argument("--db", default=ITEMS_DB)
     args = parser.parse_args()
 
