@@ -126,7 +126,16 @@ def load_item_database(gz_path):
 
 
 def load_inventory(filepath):
-    items = []
+    """Read an EQ /outputfile inventory dump (tab-separated).
+
+    The dump has a Count column, and stackable items (spells, potions, etc.)
+    or duplicate gear show up on separate lines per slot. We combine entries
+    with the same name into one, summing their counts, so a stack of 2 scrolls
+    in two slots becomes a single 'x2' entry. Returns a list of
+    {'name', 'location', 'count'} in first-seen order.
+    """
+    combined = {}  # name -> {'name', 'location', 'count'}
+    order = []
     with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
         header = None
         for line in f:
@@ -141,12 +150,23 @@ def load_inventory(filepath):
                 continue
             ni = header.index('name') if 'name' in header else 1
             li = header.index('location') if 'location' in header else 0
+            ci = header.index('count') if 'count' in header else None
             name = parts[ni].strip().rstrip('*')
             loc = parts[li].strip()
             if name.lower() in ('', 'empty'):
                 continue
-            items.append({'name': name, 'location': loc})
-    return items
+            count = 1
+            if ci is not None and ci < len(parts):
+                try:
+                    count = max(int(parts[ci].strip()), 1)
+                except ValueError:
+                    count = 1
+            if name in combined:
+                combined[name]['count'] += count
+            else:
+                combined[name] = {'name': name, 'location': loc, 'count': count}
+                order.append(name)
+    return [combined[n] for n in order]
 
 
 def make_link(itemlink, item_name):
@@ -184,8 +204,8 @@ def format_plat_price(median_pp, krono_rate):
         kr = int(median_pp // krono_rate)
         rem = int(median_pp % krono_rate)
         if kr >= 1:
-            return f"{kr}kr" if rem < 500 else f"{kr}kr {rem}pp"
-    return f"{median_pp}pp"
+            return f"{kr}kr" if rem < 500 else f"{kr}kr {rem}p"
+    return f"{median_pp}p"
 
 
 def fetch_prices_bulk(item_ids, server=SERVER):
@@ -261,7 +281,7 @@ def format_posting_price(plat, krono):
     if krono and krono > 0:
         return f"{krono:g}kr"
     if plat and plat > 0:
-        return f"{int(plat)}pp"
+        return f"{int(plat)}p"
     return "—"
 
 
@@ -271,11 +291,12 @@ class AuctionBuilder:
         self.item_db = {}
         self.item_ids = {}
         self.inventory = []
-        self.auction_items = []  # list of {'name', 'price'}
+        self.inv_by_name = {}  # name -> inventory entry, for count/location lookups
+        self.auction_items = []  # list of {'name', 'price', 'count'}
         self.inv_loaded = False
 
         self.root = tk.Tk()
-        self.root.title("EQ Auction Forge v1.3.1 — by wangel")
+        self.root.title("EQ Auction Forge v1.3.2 — by wangel")
         self.root.configure(bg='#1a1a1a')
         self.root.geometry("1000x800")
         self._build_ui()
@@ -328,7 +349,8 @@ class AuctionBuilder:
 
         lf = ttk.Frame(left)
         lf.pack(fill='x')
-        ttk.Label(lf, text="Items (double-click, or select + Add)").pack(side='left')
+        ttk.Label(lf, text="Items (dbl-click / Enter to add · Shift+click range · "
+                           "Ctrl+A all)").pack(side='left')
         self.item_count_var = tk.StringVar()
         ttk.Label(lf, textvariable=self.item_count_var, foreground='#666666').pack(side='right')
 
@@ -348,20 +370,26 @@ class AuctionBuilder:
         # below them (mixing pack sides in one parent gets messy otherwise).
         tree_frame = ttk.Frame(left)
         tree_frame.pack(side='top', fill='both', expand=True)
-        cols = ('name', 'location')
+        cols = ('name', 'qty', 'location')
         # selectmode='extended' lets the user shift/ctrl-click a range of items
         # and add them all at once instead of double-clicking each.
         self.item_tree = ttk.Treeview(tree_frame, columns=cols, show='headings',
                                       height=20, selectmode='extended')
         self.item_tree.heading('name', text='Item Name')
+        self.item_tree.heading('qty', text='Qty')
         self.item_tree.heading('location', text='Location')
-        self.item_tree.column('name', width=300)
+        self.item_tree.column('name', width=280)
+        self.item_tree.column('qty', width=40, anchor='center')
         self.item_tree.column('location', width=120)
         sb = ttk.Scrollbar(tree_frame, orient='vertical', command=self.item_tree.yview)
         self.item_tree.configure(yscrollcommand=sb.set)
         self.item_tree.pack(side='left', fill='both', expand=True)
         sb.pack(side='right', fill='y')
         self.item_tree.bind('<Double-1>', self._add_to_auction)
+        # Explorer-style keyboard: Ctrl+A selects everything, Enter adds the
+        # current selection to the auction list.
+        self._bind_select_all(self.item_tree)
+        self.item_tree.bind('<Return>', lambda e: self._add_selected_to_auction())
 
         # Actions on the item list (work on the current selection — one or many)
         ibf = ttk.Frame(left)
@@ -377,22 +405,29 @@ class AuctionBuilder:
         right = ttk.Frame(paned)
         paned.add(right, weight=1)
 
-        ttk.Label(right, text="Auction (double-click to remove)").pack(anchor='w')
+        ttk.Label(right, text="Auction (dbl-click / Del to remove · "
+                              "Ctrl+A all)").pack(anchor='w')
 
         auc_frame = ttk.Frame(right)
         auc_frame.pack(fill='both', expand=True)
-        self.auc_tree = ttk.Treeview(auc_frame, columns=('name', 'price'),
-                                     show='headings', height=8)
+        # extended selectmode so several rows can be removed/repriced at once.
+        self.auc_tree = ttk.Treeview(auc_frame, columns=('name', 'price', 'qty'),
+                                     show='headings', height=8,
+                                     selectmode='extended')
         self.auc_tree.heading('name', text='Item')
         self.auc_tree.heading('price', text='Price')
-        self.auc_tree.column('name', width=220)
+        self.auc_tree.heading('qty', text='Qty')
+        self.auc_tree.column('name', width=190)
         self.auc_tree.column('price', width=80)
+        self.auc_tree.column('qty', width=40, anchor='center')
         auc_sb = ttk.Scrollbar(auc_frame, orient='vertical', command=self.auc_tree.yview)
         self.auc_tree.configure(yscrollcommand=auc_sb.set)
         self.auc_tree.pack(side='left', fill='both', expand=True)
         auc_sb.pack(side='right', fill='y')
         self.auc_tree.bind('<Double-1>', self._remove_from_auction)
+        self.auc_tree.bind('<Delete>', self._remove_from_auction)
         self.auc_tree.bind('<<TreeviewSelect>>', self._on_auction_select)
+        self._bind_select_all(self.auc_tree)
 
         # Price controls (always visible — core flow for price-only users)
         pf = ttk.Frame(right)
@@ -522,18 +557,24 @@ class AuctionBuilder:
             font=('Consolas', 9), wrap='word', padx=10, pady=10)
         txt.pack(fill='both', expand=True, padx=10, pady=10)
 
-        help_text = """EQ Auction Forge v1.3.1
+        help_text = """EQ Auction Forge v1.3.2
 by wangel
 
 HOW TO USE:
 
 1. In-game: /outputfile inventory
 2. Click "Load Inventory" and select the file
-3. Add items to your auction list:
+3. Add items to your auction list (explorer-style
+   multi-select):
    - Double-click an item, OR
-   - Shift/Ctrl-click several, then "Add Selected"
+   - Shift-click a range / Ctrl-click to toggle /
+     Ctrl+A to select all, then "Add Selected"
+     (or just press Enter)
+   - In the auction list, Delete removes the
+     selected rows (Ctrl+A there too)
 4. Set prices:
-   - Type a price, select an item, click "Set Price"
+   - Type a price, select item(s), click "Set Price"
+     (applies to every selected row)
    - Or click "PC All" to auto-fetch prices from
      TLP Auctions (uses median, not average)
    - Set "Undercut %" to shave that % off every
@@ -589,6 +630,7 @@ Pricing: tlp-auctions.com"""
         if not path:
             return
         self.inventory = load_inventory(path)
+        self.inv_by_name = {it['name']: it for it in self.inventory}
         self.inv_loaded = True
         self.inv_only_var.set(True)
         self.status_var.set(f"Inventory: {len(self.inventory)} items")
@@ -607,7 +649,10 @@ Pricing: tlp-auctions.com"""
                 if search and search not in name.lower():
                     continue
                 if name in self.item_db:
-                    self.item_tree.insert('', 'end', values=(name, item['location']))
+                    self.item_tree.insert(
+                        '', 'end',
+                        values=(name, self._qty_str(item.get('count', 1)),
+                                item['location']))
                     count += 1
                     if count >= 200:
                         break
@@ -618,11 +663,23 @@ Pricing: tlp-auctions.com"""
             # Collect matches first, then sort alphabetically before showing.
             matches = sorted((n for n in self.item_db if search in n.lower()),
                              key=str.lower)
-            inv_loc = {inv['name']: inv['location'] for inv in self.inventory}
             for name in matches[:200]:
-                self.item_tree.insert('', 'end', values=(name, inv_loc.get(name, "")))
+                inv = self.inv_by_name.get(name, {})
+                self.item_tree.insert(
+                    '', 'end',
+                    values=(name, self._qty_str(inv.get('count', 1)),
+                            inv.get('location', "")))
                 count += 1
         self.item_count_var.set(f"({count})")
+
+    def _bind_select_all(self, tree):
+        """Wire Ctrl+A on a tree to select every row (explorer-style). Returns
+        'break' so the binding doesn't fall through to other handlers."""
+        def select_all(event):
+            tree.selection_set(tree.get_children())
+            return 'break'
+        tree.bind('<Control-a>', select_all)
+        tree.bind('<Control-A>', select_all)
 
     def _add_to_auction(self, event=None):
         """Double-click handler — add whatever is selected (one or many)."""
@@ -637,6 +694,22 @@ Pricing: tlp-auctions.com"""
             return
         self._add_rows_to_auction(sel)
 
+    @staticmethod
+    def _qty_str(count):
+        """Display string for a quantity column — blank for a lone item, 'xN'
+        for stacks/duplicates, so the column only draws attention when it
+        matters."""
+        try:
+            count = int(count)
+        except (TypeError, ValueError):
+            count = 1
+        return f"x{count}" if count > 1 else ""
+
+    def _auc_values(self, item):
+        """Tree row tuple for an auction item: (name, price, qty)."""
+        return (item['name'], item.get('price', ''),
+                self._qty_str(item.get('count', 1)))
+
     def _add_rows_to_auction(self, sel):
         """Add the given item-tree rows to the auction list."""
         price = self.price_var.get() or ""
@@ -645,20 +718,28 @@ Pricing: tlp-auctions.com"""
             name = str(self.item_tree.item(iid)['values'][0])
             if name not in self.item_db:
                 continue
-            self.auction_items.append({'name': name, 'price': price})
-            self.auc_tree.insert('', 'end', values=(name, price))
+            count = self.inv_by_name.get(name, {}).get('count', 1)
+            item = {'name': name, 'price': price, 'count': count}
+            self.auction_items.append(item)
+            self.auc_tree.insert('', 'end', values=self._auc_values(item))
             added += 1
         if added > 1:
             self._log(f"Added {added} items to auction")
 
-    def _remove_from_auction(self, event):
+    def _remove_from_auction(self, event=None):
+        """Remove every selected auction row (double-click or Delete key)."""
         sel = self.auc_tree.selection()
         if not sel:
             return
-        idx = self.auc_tree.index(sel[0])
-        self.auc_tree.delete(sel[0])
-        if idx < len(self.auction_items):
-            self.auction_items.pop(idx)
+        # Map each row to its list index, then delete highest-first so the
+        # remaining indices stay valid as we pop.
+        children = self.auc_tree.get_children()
+        idx_of = {iid: i for i, iid in enumerate(children)}
+        for iid in sorted(sel, key=lambda i: idx_of.get(i, -1), reverse=True):
+            idx = idx_of.get(iid)
+            self.auc_tree.delete(iid)
+            if idx is not None and idx < len(self.auction_items):
+                self.auction_items.pop(idx)
 
     def _on_auction_select(self, event):
         """Show the selected item's current price in the price field."""
@@ -671,15 +752,16 @@ Pricing: tlp-auctions.com"""
             self.price_var.set(current_price)
 
     def _set_price(self):
-        """Set price for selected item in auction list."""
+        """Set the price box value on every selected auction row."""
         sel = self.auc_tree.selection()
         if not sel:
             return
         price = self.price_var.get()
-        idx = self.auc_tree.index(sel[0])
-        if idx < len(self.auction_items):
-            self.auction_items[idx]['price'] = price
-            self.auc_tree.item(sel[0], values=(self.auction_items[idx]['name'], price))
+        for iid in sel:
+            idx = self.auc_tree.index(iid)
+            if idx < len(self.auction_items):
+                self.auction_items[idx]['price'] = price
+                self.auc_tree.item(iid, values=self._auc_values(self.auction_items[idx]))
 
     def _undercut_pct(self):
         """Read the Undercut % box. Returns a float in [0, 100); 0 if blank or
@@ -790,7 +872,7 @@ Pricing: tlp-auctions.com"""
             children = self.auc_tree.get_children()
             if idx < len(children):
                 self.auc_tree.item(children[idx],
-                                   values=(self.auction_items[idx]['name'], price))
+                                   values=self._auc_values(self.auction_items[idx]))
 
     def _price_check_left(self):
         """Price check the item(s) selected in the left/inventory list. Results
@@ -946,9 +1028,11 @@ Pricing: tlp-auctions.com"""
             for item in items:
                 name = item.get('name', '')
                 price = item.get('price', '')
+                count = item.get('count', 1)
                 if name:
-                    self.auction_items.append({'name': name, 'price': price})
-                    self.auc_tree.insert('', 'end', values=(name, price))
+                    entry = {'name': name, 'price': price, 'count': count}
+                    self.auction_items.append(entry)
+                    self.auc_tree.insert('', 'end', values=self._auc_values(entry))
             self._log(f"Loaded {len(self.auction_items)} items from {os.path.basename(path)}")
         except Exception as e:
             messagebox.showerror("Error", f"Load failed: {e}")
@@ -1164,10 +1248,15 @@ Pricing: tlp-auctions.com"""
                 messagebox.showwarning("Missing", f"No link: {item['name']}")
                 return
             link = make_link(itemlink, item['name'])
+            # Build "<link> <price> xN", dropping the parts that don't apply, so
+            # a priced stack reads like "<Singing Steel Bracer> 500p x2".
+            extras = []
             if item['price']:
-                link_str = f"{link} {item['price']}"
-            else:
-                link_str = link
+                extras.append(item['price'])
+            count = item.get('count', 1)
+            if count and count > 1:
+                extras.append(f"x{count}")
+            link_str = " ".join([link] + extras) if extras else link
             link_strings.append(link_str)
 
         # Auto-pack into lines under 255 chars
@@ -1261,7 +1350,7 @@ Pricing: tlp-auctions.com"""
 
 
 def main():
-    parser = argparse.ArgumentParser(description="EQ Auction Forge v1.3.1 - wangel")
+    parser = argparse.ArgumentParser(description="EQ Auction Forge v1.3.2 - wangel")
     parser.add_argument("--db", default=ITEMS_DB)
     args = parser.parse_args()
 
