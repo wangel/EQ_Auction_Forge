@@ -317,7 +317,7 @@ class AuctionBuilder:
         self.inv_loaded = False
 
         self.root = tk.Tk()
-        self.root.title("EQ Auction Forge v1.3.3 — by wangel")
+        self.root.title("EQ Auction Forge v1.3.4 — by wangel")
         self.root.configure(bg='#1a1a1a')
         self.root.geometry("1000x800")
         self._build_ui()
@@ -497,6 +497,18 @@ class AuctionBuilder:
         ttk.Entry(sf, textvariable=self.suffix_var, width=8).pack(side='left', padx=(5, 2))
         ttk.Button(sf, text="?", width=2, command=self._suffix_help).pack(side='left')
 
+        # Macro pricing threshold: items priced at/above this go out as
+        # clickable links (the high-ticket "movers"); cheaper items go out as
+        # compact plain text. Krono-priced items always link. Blank/0 links
+        # everything (the classic behavior).
+        tf = ttk.Frame(self.macro_panel)
+        tf.pack(fill='x', pady=3)
+        ttk.Label(tf, text="Link if ≥:").pack(side='left')
+        self.threshold_var = tk.StringVar(value="600p")
+        ttk.Entry(tf, textvariable=self.threshold_var, width=7).pack(side='left', padx=5)
+        ttk.Label(tf, text="cheaper → plain text  |  blank/0 = link everything",
+                  foreground='#888888', font=('Consolas', 8)).pack(side='left')
+
         # Generate / Copy
         bf = ttk.Frame(self.macro_panel)
         bf.pack(fill='x', pady=3)
@@ -578,7 +590,7 @@ class AuctionBuilder:
             font=('Consolas', 9), wrap='word', padx=10, pady=10)
         txt.pack(fill='both', expand=True, padx=10, pady=10)
 
-        help_text = """EQ Auction Forge v1.3.3
+        help_text = """EQ Auction Forge v1.3.4
 by wangel
 
 HOW TO USE:
@@ -1028,8 +1040,10 @@ Pricing: tlp-auctions.com"""
         if not path:
             return
         try:
+            payload = {'threshold': self.threshold_var.get(),
+                       'items': self.auction_items}
             with open(path, 'w', encoding='utf-8') as f:
-                json.dump(self.auction_items, f, indent=2)
+                json.dump(payload, f, indent=2)
             self._log(f"Saved {len(self.auction_items)} items to {os.path.basename(path)}")
         except Exception as e:
             messagebox.showerror("Error", f"Save failed: {e}")
@@ -1043,9 +1057,13 @@ Pricing: tlp-auctions.com"""
             return
         try:
             with open(path, 'r', encoding='utf-8') as f:
-                items = json.load(f)
+                data = json.load(f)
+            # New format: {threshold, items}. Old format: a bare item list.
+            items = data.get('items', []) if isinstance(data, dict) else data
             # Clear current and load
             self._clear()
+            if isinstance(data, dict) and 'threshold' in data:
+                self.threshold_var.set(data.get('threshold', ''))
             for item in items:
                 name = item.get('name', '')
                 price = item.get('price', '')
@@ -1186,6 +1204,35 @@ Pricing: tlp-auctions.com"""
             if '[Socials]' not in existing:
                 existing = existing.rstrip() + '\n\n[Socials]\n'
 
+            # First, find buttons WE wrote on a previous run — their Name is
+            # exactly WTS# or Rare#. We clear these out before writing the new
+            # set so a shrunk list (or the old page-1 bug) doesn't leave
+            # orphaned buttons behind. Hand-made socials are never matched.
+            import re
+            auto_name_re = re.compile(r'^(?:WTS|Rare)\d+$')
+            drop_prefixes = set()  # e.g. 'Page2Button1' -> drop its Name/Color/Line*
+            in_socials = False
+            for line in existing.split('\n'):
+                st = line.strip()
+                if st == '[Socials]':
+                    in_socials = True
+                elif st.startswith('[') and st.endswith(']'):
+                    in_socials = False
+                elif in_socials and '=' in st:
+                    k, v = st.split('=', 1)
+                    k = k.strip()
+                    if k.endswith('Name') and auto_name_re.match(v.strip()):
+                        drop_prefixes.add(k[:-4])  # strip trailing 'Name'
+
+            def _is_auto_button(key):
+                """True if key belongs to a slot we previously auto-wrote."""
+                for p in drop_prefixes:
+                    if key in (p + 'Name', p + 'Color'):
+                        return True
+                    if key.startswith(p + 'Line') and key[len(p) + 4:].isdigit():
+                        return True
+                return False
+
             # Find the [Socials] section and update/add entries
             lines = existing.split('\n')
             output_lines = []
@@ -1215,6 +1262,8 @@ Pricing: tlp-auctions.com"""
                         output_lines.append(f"{key}={new_entries[key]}")
                         written_keys.add(key)
                         continue
+                    if _is_auto_button(key):
+                        continue  # orphaned auto-button from a previous run — drop it
 
                 output_lines.append(line)
 
@@ -1242,6 +1291,92 @@ Pricing: tlp-auctions.com"""
             except Exception:
                 pass
 
+    def _threshold_plat(self):
+        """Read the 'Link if >=' box as a plat value. Returns an int; 0 means
+        the split is OFF (link everything — the classic behavior). A 'kr' unit
+        is converted with the default krono rate. Blank/invalid -> 0."""
+        raw = self.threshold_var.get().strip().lower().replace(',', '').replace(' ', '')
+        if not raw:
+            return 0
+        mult = 1
+        if 'kr' in raw:
+            mult = DEFAULT_KRONO_RATE
+            raw = raw.replace('kr', '')
+        raw = raw.rstrip('p')
+        if not raw:
+            return mult if mult > 1 else 0  # bare "kr" -> one krono
+        try:
+            return max(int(float(raw) * mult), 0)
+        except ValueError:
+            return 0
+
+    @staticmethod
+    def _classify_price(price_str):
+        """Classify an item's price for the link/text split. Returns
+        (kind, plat) where kind is 'krono' | 'plat' | 'none'. 'krono' always
+        links; 'plat' is compared to the threshold; 'none' is unpriced (goes
+        to the text list flagged 'pst')."""
+        s = (price_str or '').strip().lower()
+        if not s:
+            return ('none', 0)
+        if 'kr' in s:
+            return ('krono', 0)
+        digits = ''.join(ch for ch in s if ch.isdigit() or ch == '.')
+        if digits:
+            try:
+                return ('plat', int(float(digits)))
+            except ValueError:
+                return ('none', 0)
+        return ('none', 0)
+
+    def _pack_to_lines(self, tokens, prefix, suffix, sep):
+        """Pack token strings (link or text) into <=255-char auction lines,
+        each led by prefix and optionally tailed by suffix."""
+        lines, cur = [], []
+        base = len(prefix) + 1
+        suffix_len = len(f" {suffix}") if suffix else 0
+        cur_len = base
+        for tok in tokens:
+            add = (len(sep) if cur else 0) + len(tok)
+            if cur and cur_len + add + suffix_len > 255:
+                line = f"{prefix} " + sep.join(cur)
+                lines.append(line + (f" {suffix}" if suffix else ""))
+                cur, cur_len = [tok], base + len(tok)
+            else:
+                cur.append(tok)
+                cur_len += add
+        if cur:
+            line = f"{prefix} " + sep.join(cur)
+            lines.append(line + (f" {suffix}" if suffix else ""))
+        return lines
+
+    def _buttons_from_lines(self, lines, btn_name, start_page, max_lines_btn=5):
+        """Lay packed lines into EQ social buttons starting at start_page,
+        rolling to the next page after BUTTONS_PER_PAGE. btn_name is the label
+        stem (WTS / Rare); buttons number from 1. Returns
+        (ini_lines, preview, overflow_count, written, end_page)."""
+        out, preview = [], []
+        page, btn, written, overflow = start_page, 1, 0, 0
+        chunks = list(range(0, len(lines), max_lines_btn))
+        for bs in chunks:
+            if btn > BUTTONS_PER_PAGE:
+                page += 1
+                btn = 1
+            if page > MAX_PAGE:
+                overflow = len(chunks) - written
+                break
+            bl = lines[bs:bs + max_lines_btn]
+            label = f"{btn_name}{written + 1}"
+            out.append(f"Page{page}Button{btn}Name={label}")
+            out.append(f"Page{page}Button{btn}Color=0")
+            for ln, line in enumerate(bl, 1):
+                out.append(f"Page{page}Button{btn}Line{ln}={line}")
+            out.append("")
+            preview.append((label, bl))
+            btn += 1
+            written += 1
+        return out, preview, overflow, written, page
+
     def _generate(self):
         if not self.auction_items:
             messagebox.showwarning("Warning", "No items in auction")
@@ -1258,88 +1393,84 @@ Pricing: tlp-auctions.com"""
 
         prefix = self.prefix_var.get()
         suffix = self.suffix_var.get()
-        max_line = 255
-        max_lines_btn = 5
+        threshold = self._threshold_plat()
 
-        # Build link strings with per-item prices
-        link_strings = []
+        # Every auction item needs a DB link for the link group — bail early
+        # (and clearly) if one is missing rather than half-generating.
         for item in self.auction_items:
-            itemlink = self.item_db.get(item['name'])
-            if not itemlink:
+            if not self.item_db.get(item['name']):
                 messagebox.showwarning("Missing", f"No link: {item['name']}")
                 return
-            link = make_link(itemlink, item['name'])
-            # Append the price only. We deliberately DON'T append "xN" for a
-            # stack: tlp-auctions' scraper reads "<Helm of Rile> 95p x2" as
-            # two-for-95p and reports half price. Quantity now lives only in
-            # the UI Qty column, never in the broadcast macro.
-            link_str = f"{link} {item['price']}" if item['price'] else link
-            link_strings.append(link_str)
 
-        # Auto-pack into lines under 255 chars
-        all_lines = []
-        current_parts = []
-        current_len = len(prefix) + 1
-        suffix_len = len(f" {suffix}") if suffix else 0
+        def link_token(item):
+            link = make_link(self.item_db[item['name']], item['name'])
+            # No "xN": tlp-auctions reads a trailing "x2" as two-for-price.
+            return f"{link} {item['price']}" if item['price'] else link
 
-        for ls in link_strings:
-            sep = ", " if current_parts else ""
-            addition = len(sep) + len(ls)
-            if current_len + addition + suffix_len > max_line and current_parts:
-                line = f"{prefix} " + ", ".join(current_parts)
-                if suffix:
-                    line += f" {suffix}"
-                all_lines.append(line)
-                current_parts = [ls]
-                current_len = len(prefix) + 1 + len(ls)
-            else:
-                current_parts.append(ls)
-                current_len += addition
+        def text_token(item):
+            # Exact DB-case name (tlp-auctions matches unlinked posts on exact
+            # case); price as-is, or 'pst' when unpriced so it reads "ask me".
+            return f"{item['name']} {item['price']}" if item['price'] \
+                else f"{item['name']} pst"
 
-        if current_parts:
-            line = f"{prefix} " + ", ".join(current_parts)
-            if suffix:
-                line += f" {suffix}"
-            all_lines.append(line)
+        out, preview, overflow, unpriced = [], [], 0, []
 
-        # Pack into buttons (max_lines_btn lines each), filling
-        # BUTTONS_PER_PAGE buttons per page, then rolling to the next page.
-        # EQ socials stop at MAX_PAGE — anything past that is dropped.
-        out = []
-        btn = 1
-        buttons_written = 0
-        overflow = 0
-        button_chunks = list(range(0, len(all_lines), max_lines_btn))
-        for bs in button_chunks:
-            if btn > BUTTONS_PER_PAGE:
-                page += 1
-                btn = 1
-            if page > MAX_PAGE:
-                overflow = len(button_chunks) - buttons_written
-                break
-            bl = all_lines[bs:bs + max_lines_btn]
-            out.append(f"Page{page}Button{btn}Name=WTS{buttons_written + 1}")
-            out.append(f"Page{page}Button{btn}Color=0")
-            for ln, line in enumerate(bl, 1):
-                out.append(f"Page{page}Button{btn}Line{ln}={line}")
-            out.append("")
-            btn += 1
-            buttons_written += 1
+        if threshold <= 0:
+            # Split OFF -> classic behavior: everything links, WTS#, at `page`.
+            lines = self._pack_to_lines(
+                [link_token(i) for i in self.auction_items], prefix, suffix, ", ")
+            out, preview, overflow, _, _ = self._buttons_from_lines(lines, "WTS", page)
+            self._log(f"Generated {len(preview)} button(s) (link everything)")
+        else:
+            # Split ON -> cheap items to compact text, movers/krono to links.
+            text_items, link_items = [], []
+            for item in self.auction_items:
+                kind, plat = self._classify_price(item['price'])
+                if kind == 'krono' or (kind == 'plat' and plat >= threshold):
+                    link_items.append(item)
+                else:
+                    if kind == 'none':
+                        unpriced.append(item['name'])
+                    text_items.append(item)
+
+            text_lines = self._pack_to_lines(
+                [text_token(i) for i in text_items], prefix, suffix, " | ")
+            link_lines = self._pack_to_lines(
+                [link_token(i) for i in link_items], prefix, suffix, ", ")
+
+            # Both groups start at the Page box (default 2) and go up, so page 1
+            # — the player's normal action buttons — is never touched. Text
+            # fills first; the premium "Rare" links get a fresh page after it.
+            text_out, text_pv, text_of, _, text_end = self._buttons_from_lines(
+                text_lines, "WTS", page)
+            link_start = max(page, text_end + 1) if text_items else page
+            link_out, link_pv, link_of, _, _ = self._buttons_from_lines(
+                link_lines, "Rare", link_start)
+
+            out = text_out + link_out
+            preview = text_pv + link_pv
+            overflow = text_of + link_of
+            self._log(f"Split @ {threshold}p: {len(text_items)} text (WTS, pg {page}), "
+                      f"{len(link_items)} link (Rare, pg {link_start})")
+            if unpriced:
+                self._log(f"  no price -> 'pst': {', '.join(unpriced)}")
 
         self.output_text.delete('1.0', 'end')
         self.output_text.insert('1.0', '\n'.join(out))
 
         # Preview (only the buttons that actually fit)
         self.output_text.insert('end', '\n--- PREVIEW ---\n')
-        for bn, bs in enumerate(button_chunks[:buttons_written], 1):
-            bl = all_lines[bs:bs + max_lines_btn]
-            self.output_text.insert('end', f"\nButton {bn}:\n")
+        for label, bl in preview:
+            self.output_text.insert('end', f"\n{label}:\n")
             for i, line in enumerate(bl, 1):
                 clean = line.replace(DC2, '|')
                 self.output_text.insert('end', f"  L{i} ({len(line)}c): {clean}\n")
 
-        lines_written = min(len(all_lines), buttons_written * max_lines_btn)
-        self._log(f"Generated {lines_written} lines across {buttons_written} button(s)")
+        if unpriced:
+            messagebox.showinfo(
+                "Unpriced items",
+                f"{len(unpriced)} item(s) had no price and were listed as plain "
+                f"text with 'pst':\n\n" + ", ".join(unpriced))
 
         if overflow:
             messagebox.showwarning(
@@ -1367,7 +1498,7 @@ Pricing: tlp-auctions.com"""
 
 
 def main():
-    parser = argparse.ArgumentParser(description="EQ Auction Forge v1.3.3 - wangel")
+    parser = argparse.ArgumentParser(description="EQ Auction Forge v1.3.4 - wangel")
     parser.add_argument("--db", default=ITEMS_DB)
     args = parser.parse_args()
 
