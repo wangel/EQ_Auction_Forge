@@ -125,13 +125,30 @@ def load_item_database(gz_path):
     return items, ids
 
 
+# Worthless newbie/starter items that clutter the inventory list but never get
+# sold in EC tunnel. Matched by exact (case-insensitive) name so we don't nuke
+# named gear that happens to share a word (e.g. "Dagger" the newbie item vs.
+# "Ceremonial Dagger"). Add more here as you spot them.
+EXCLUDED_ITEMS = frozenset(n.lower() for n in (
+    "Backpack",
+    "Small Box",
+    "Dagger",
+    "Skin of Milk",
+    "Bread Cakes",
+    "Gloomingdeep Lantern",
+    "Ethereal Dreamweave Satchel",
+    "Dreamweave Satchel",
+))
+
+
 def load_inventory(filepath):
     """Read an EQ /outputfile inventory dump (tab-separated).
 
     The dump has a Count column, and stackable items (spells, potions, etc.)
     or duplicate gear show up on separate lines per slot. We combine entries
     with the same name into one, summing their counts, so a stack of 2 scrolls
-    in two slots becomes a single 'x2' entry. Returns a list of
+    in two slots becomes a single 'x2' entry. Worthless newbie/starter items
+    (see EXCLUDED_ITEMS) are dropped. Returns a list of
     {'name', 'location', 'count'} in first-seen order.
     """
     combined = {}  # name -> {'name', 'location', 'count'}
@@ -153,7 +170,11 @@ def load_inventory(filepath):
             ci = header.index('count') if 'count' in header else None
             name = parts[ni].strip().rstrip('*')
             loc = parts[li].strip()
-            if name.lower() in ('', 'empty'):
+            # '' / 'empty' = empty slots; 'name' = the KeyRing sub-header row
+            # at the bottom of the dump leaking in as a phantom item.
+            if name.lower() in ('', 'empty', 'name'):
+                continue
+            if name.lower() in EXCLUDED_ITEMS:
                 continue
             count = 1
             if ci is not None and ci < len(parts):
@@ -296,7 +317,7 @@ class AuctionBuilder:
         self.inv_loaded = False
 
         self.root = tk.Tk()
-        self.root.title("EQ Auction Forge v1.3.2 — by wangel")
+        self.root.title("EQ Auction Forge v1.3.3 — by wangel")
         self.root.configure(bg='#1a1a1a')
         self.root.geometry("1000x800")
         self._build_ui()
@@ -557,7 +578,7 @@ class AuctionBuilder:
             font=('Consolas', 9), wrap='word', padx=10, pady=10)
         txt.pack(fill='both', expand=True, padx=10, pady=10)
 
-        help_text = """EQ Auction Forge v1.3.2
+        help_text = """EQ Auction Forge v1.3.3
 by wangel
 
 HOW TO USE:
@@ -1248,15 +1269,11 @@ Pricing: tlp-auctions.com"""
                 messagebox.showwarning("Missing", f"No link: {item['name']}")
                 return
             link = make_link(itemlink, item['name'])
-            # Build "<link> <price> xN", dropping the parts that don't apply, so
-            # a priced stack reads like "<Singing Steel Bracer> 500p x2".
-            extras = []
-            if item['price']:
-                extras.append(item['price'])
-            count = item.get('count', 1)
-            if count and count > 1:
-                extras.append(f"x{count}")
-            link_str = " ".join([link] + extras) if extras else link
+            # Append the price only. We deliberately DON'T append "xN" for a
+            # stack: tlp-auctions' scraper reads "<Helm of Rile> 95p x2" as
+            # two-for-95p and reports half price. Quantity now lives only in
+            # the UI Qty column, never in the broadcast macro.
+            link_str = f"{link} {item['price']}" if item['price'] else link
             link_strings.append(link_str)
 
         # Auto-pack into lines under 255 chars
@@ -1350,7 +1367,7 @@ Pricing: tlp-auctions.com"""
 
 
 def main():
-    parser = argparse.ArgumentParser(description="EQ Auction Forge v1.3.2 - wangel")
+    parser = argparse.ArgumentParser(description="EQ Auction Forge v1.3.3 - wangel")
     parser.add_argument("--db", default=ITEMS_DB)
     args = parser.parse_args()
 
