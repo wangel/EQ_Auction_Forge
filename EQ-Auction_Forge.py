@@ -207,8 +207,15 @@ def make_link(itemlink, item_name):
 BULK_PRICE_LIMIT = 10  # API accepts up to 10 item ids per bulk request
 DEFAULT_KRONO_RATE = 4000  # fallback for kr display when the API reports 0
 
+APP_VERSION = "1.3.5"
+
+# Identify ourselves to the TLP Auctions API. Their operator asked tool authors
+# to send a custom User-Agent so legit tool traffic isn't mistaken for spam and
+# blocked, so we name the app + version and link the repo rather than spoofing
+# a browser.
 _API_HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+    'User-Agent': f'EQ-Auction_Forge/{APP_VERSION} '
+                  '(+https://github.com/wangel/EQ_Auction_Forge)',
     'Accept': 'application/json',
     'Content-Type': 'application/json',
 }
@@ -317,7 +324,7 @@ class AuctionBuilder:
         self.inv_loaded = False
 
         self.root = tk.Tk()
-        self.root.title("EQ Auction Forge v1.3.4 — by wangel")
+        self.root.title("EQ Auction Forge v1.3.5 — by wangel")
         self.root.configure(bg='#1a1a1a')
         self.root.geometry("1000x800")
         self._build_ui()
@@ -590,7 +597,7 @@ class AuctionBuilder:
             font=('Consolas', 9), wrap='word', padx=10, pady=10)
         txt.pack(fill='both', expand=True, padx=10, pady=10)
 
-        help_text = """EQ Auction Forge v1.3.4
+        help_text = """EQ Auction Forge v1.3.5
 by wangel
 
 HOW TO USE:
@@ -1498,7 +1505,7 @@ Pricing: tlp-auctions.com"""
 
 
 def main():
-    parser = argparse.ArgumentParser(description="EQ Auction Forge v1.3.4 - wangel")
+    parser = argparse.ArgumentParser(description="EQ Auction Forge v1.3.5 - wangel")
     parser.add_argument("--db", default=ITEMS_DB)
     args = parser.parse_args()
 
