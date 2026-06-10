@@ -28,6 +28,13 @@ from urllib.parse import urlencode
 
 import ssl
 
+import logmon  # log-monitor matcher + tailer (beta, feature/log-monitor)
+
+try:
+    import winsound  # Windows-only; alert beep degrades to silent elsewhere
+except ImportError:
+    winsound = None
+
 # A windowed PyInstaller build has no console, so sys.stdout/stderr are None.
 # Guard against stray print()/traceback writes crashing the app.
 if sys.stdout is None:
@@ -54,6 +61,65 @@ def _cache_dir():
     d = os.path.join(base, 'EQAuctionForge')
     os.makedirs(d, exist_ok=True)
     return d
+
+
+def _is_eq_dir(d):
+    """A real EverQuest folder has the game/launcher exe."""
+    return bool(d) and (os.path.isfile(os.path.join(d, 'eqgame.exe'))
+                        or os.path.isfile(os.path.join(d, 'launchpad.exe')))
+
+
+def _eq_install_dir():
+    """EverQuest install dir, or None.
+     registry first (Daybreak/SOE 'EverQuest' key,
+    'InstallDir' value, HKLM+HKCU, both WOW6432 views), then common fallback
+    paths — each validated by the presence of eqgame.exe / launchpad.exe."""
+    try:
+        import winreg
+        subkeys = (
+            r"SOFTWARE\WOW6432Node\Daybreak Game Company\EverQuest",
+            r"SOFTWARE\Daybreak Game Company\EverQuest",
+            r"SOFTWARE\WOW6432Node\Sony Online Entertainment\EverQuest",
+            r"SOFTWARE\Sony Online Entertainment\EverQuest",
+        )
+        for hive in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+            for sub in subkeys:
+                try:
+                    with winreg.OpenKey(hive, sub) as k:
+                        val, _ = winreg.QueryValueEx(k, "InstallDir")
+                    if _is_eq_dir(val):
+                        return val
+                except OSError:
+                    continue
+    except ImportError:
+        pass
+    pub = os.environ.get('PUBLIC', r'C:\Users\Public')
+    for p in (
+        os.path.join(pub, 'Daybreak Game Company', 'Installed Games', 'EverQuest'),
+        os.path.join(pub, 'Sony Online Entertainment', 'Installed Games', 'EverQuest'),
+        r'C:\EverQuest',
+        r'D:\Games\EverQuest',
+    ):
+        if _is_eq_dir(p):
+            return p
+    return None
+
+
+def _eq_logs_dir():
+    """<EQ>\\Logs from the registry, or None."""
+    d = _eq_install_dir()
+    if not d:
+        return None
+    logs = os.path.join(d, 'Logs')
+    return logs if os.path.isdir(logs) else d
+
+
+def _newest_eqlog(logs_dir, server):
+    """Most recently written eqlog_<Char>_<server>.txt in logs_dir — i.e. the
+    character you're actively playing on that server. None if none found."""
+    import glob
+    files = glob.glob(os.path.join(logs_dir, f"eqlog_*_{(server or '').lower()}.txt"))
+    return max(files, key=os.path.getmtime) if files else None
 
 
 ITEMS_DB = os.path.join(_app_dir(), "items.txt.gz")
@@ -102,13 +168,25 @@ def load_item_database(gz_path):
     items = {}
     ids = {}
     txt_path = os.path.join(_cache_dir(), 'items.txt')
-    if not os.path.isfile(txt_path):
-        if not os.path.isfile(gz_path):
-            return items, ids
-        print(f"  Extracting {gz_path}...")
-        with gzip.open(gz_path, 'rt', encoding='utf-8', errors='ignore') as f:
-            with open(txt_path, 'w', encoding='utf-8') as out:
-                out.write(f.read())
+    gz_ok = os.path.isfile(gz_path)
+    # Re-extract when the cache is missing OR the bundled .gz is newer than the
+    # cached .txt (i.e. a new release shipped fresh data) — otherwise reuse the
+    # cache so startup stays fast.
+    stale = True
+    if os.path.isfile(txt_path):
+        try:
+            stale = gz_ok and os.path.getmtime(gz_path) > os.path.getmtime(txt_path)
+        except OSError:
+            stale = False
+    if stale:
+        if not gz_ok:
+            if not os.path.isfile(txt_path):
+                return items, ids          # no source and no cache
+        else:
+            print(f"  Extracting {gz_path} (new/updated database)...")
+            with gzip.open(gz_path, 'rt', encoding='utf-8', errors='ignore') as f:
+                with open(txt_path, 'w', encoding='utf-8') as out:
+                    out.write(f.read())
     print(f"  Loading items...")
     with open(txt_path, 'r', encoding='utf-8', errors='ignore') as f:
         reader = csv.DictReader(f, delimiter='|')
@@ -209,7 +287,7 @@ def make_link(itemlink, item_name):
 BULK_PRICE_LIMIT = 10  # API accepts up to 10 item ids per bulk request
 DEFAULT_KRONO_RATE = 4000  # fallback for kr display when the API reports 0
 
-APP_VERSION = "1.3.7"
+APP_VERSION = "1.4.0(beta)"
 
 # Identify ourselves to the TLP Auctions API. Their operator asked tool authors
 # to send a custom User-Agent so legit tool traffic isn't mistaken for spam and
@@ -248,21 +326,6 @@ def check_latest_release():
         return tag or None
     except Exception:
         return None
-
-
-def format_plat_price(median_pp, krono_rate):
-    """Format an effective plat price as kr/pp using the server's krono rate.
-
-    The bulk API already folds krono-priced sales into plat, so median_pp is a
-    straight plat value. We only use krono_rate to display big numbers in kr.
-    """
-    median_pp = int(round(median_pp))
-    if krono_rate and krono_rate > 0:
-        kr = int(median_pp // krono_rate)
-        rem = int(median_pp % krono_rate)
-        if kr >= 1:
-            return f"{kr}kr" if rem < 500 else f"{kr}kr {rem}p"
-    return f"{median_pp}p"
 
 
 def fetch_prices_bulk(item_ids, server=SERVER):
@@ -353,9 +416,20 @@ class AuctionBuilder:
         self.inv_loaded = False
         # Per-(tree, column) ascending/descending toggle for header sorting.
         self._sort_state = {}
+        self._last_inv_dir = ''    # remembered inventory folder (defaults to EQ root)
+        # Log monitor (beta): built lazily on first Start.
+        self._last_ini_path = ''   # remembered char INI, for guessing the log path
+        self._matcher = None       # logmon.Matcher (idf is ~1s to build, so cache)
+        self._log_monitor = None   # logmon.LogMonitor while running
+        self._lm_win = None        # the Toplevel window
+        self._user_aliases = None  # lazily loaded from aliases.json
+        self._alias_win = None     # the alias editor Toplevel
+        self._watchlist = None     # lazily loaded from watchlist.json (items I want)
+        self._watch_win = None     # the watchlist editor Toplevel
+        self._silenced = None      # lazily loaded set of items muted from dinging
 
         self.root = tk.Tk()
-        self.root.title("EQ Auction Forge v1.3.7 — by wangel")
+        self.root.title("EQ Auction Forge v1.4.0(beta) — by wangel")
         self.root.configure(bg='#1a1a1a')
         self.root.geometry("1000x800")
         self._build_ui()
@@ -384,6 +458,7 @@ class AuctionBuilder:
         top = ttk.Frame(self.root)
         top.pack(fill='x', padx=10, pady=5)
         ttk.Button(top, text="Load Inventory", command=self._load_inventory).pack(side='left')
+        ttk.Button(top, text="Log Monitor", command=self._open_log_monitor).pack(side='left', padx=4)
         self.status_var = tk.StringVar(value="Loading...")
         ttk.Label(top, textvariable=self.status_var, foreground='#888888').pack(side='left', padx=10)
 
@@ -662,7 +737,7 @@ class AuctionBuilder:
             font=('Consolas', 9), wrap='word', padx=10, pady=10)
         txt.pack(fill='both', expand=True, padx=10, pady=10)
 
-        help_text = """EQ Auction Forge v1.3.7
+        help_text = """EQ Auction Forge v1.4.0(beta)
 by wangel
 
 HOW TO USE:
@@ -727,6 +802,583 @@ Pricing: tlp-auctions.com"""
         ttk.Button(help_win, text="Close",
                    command=help_win.destroy).pack(pady=(0, 10))
 
+    # ----- Log Monitor (beta) -------------------------------------------------
+    def _open_log_monitor(self):
+        """Open the Log Monitor window — watches your /log on file and alerts on
+        WTB posts for items you own."""
+        if self._lm_win is not None and self._lm_win.winfo_exists():
+            self._lm_win.lift()
+            return
+        win = tk.Toplevel(self.root)
+        self._lm_win = win
+        win.title("Log Monitor (beta) — WTB alerts for your inventory")
+        win.configure(bg='#1a1a1a')
+        win.geometry("820x460")
+        win.protocol("WM_DELETE_WINDOW", self._lm_close)
+        self._lm_rows = []  # backing list (newest first) so 'Loud only' can re-filter
+
+        # Log file row: auto-guess from the char INI, else the newest eqlog for
+        # this server in the registry-discovered <EQ>\Logs.
+        top = ttk.Frame(win)
+        top.pack(fill='x', padx=8, pady=6)
+        ttk.Label(top, text="Log file:").pack(side='left')
+        self.lm_path_var = tk.StringVar(value=self._lm_guess_log_path())
+        ttk.Entry(top, textvariable=self.lm_path_var).pack(
+            side='left', fill='x', expand=True, padx=5)
+        ttk.Button(top, text="Browse", command=self._lm_browse).pack(side='left')
+
+        ctl = ttk.Frame(win)
+        ctl.pack(fill='x', padx=8, pady=(0, 6))
+        self.lm_toggle_btn = ttk.Button(ctl, text="Start", command=self._lm_toggle)
+        self.lm_toggle_btn.pack(side='left')
+        self.lm_sound_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(ctl, text="Sound on loud match",
+                        variable=self.lm_sound_var).pack(side='left', padx=10)
+        # Loud only: hide the grey MAYBE (soft/near-miss) rows from the feed.
+        self.lm_loud_only_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(ctl, text="Loud only", variable=self.lm_loud_only_var,
+                        command=self._lm_render).pack(side='left')
+        ttk.Button(ctl, text="Clear feed", command=self._lm_clear).pack(side='left', padx=(10, 0))
+        ttk.Button(ctl, text="Aliases…", command=self._open_alias_editor).pack(side='left', padx=(6, 0))
+        ttk.Button(ctl, text="Watchlist…", command=self._open_watchlist_editor).pack(side='left', padx=(6, 0))
+        self.lm_status_var = tk.StringVar(value="Idle — load your inventory, then Start.")
+        ttk.Label(ctl, textvariable=self.lm_status_var,
+                  foreground='#888888').pack(side='left', padx=10)
+
+        # Clicking a row copies '/tell <who> '; this orange banner confirms it
+        # (so you can alt-tab to EQ and just Ctrl-V the start of the tell).
+        self.lm_copy_var = tk.StringVar(value="Click a match to copy  /tell <who>  to the clipboard")
+        ttk.Label(win, textvariable=self.lm_copy_var,
+                  foreground='#ff9900').pack(anchor='w', padx=8, pady=(0, 4))
+
+        # Feed: newest on top. '+' opens the raw log line; Type = SELL (they WTB
+        # your item) / BUY (they WTS a watchlist item); tier drives row color.
+        self._lm_raw_by_iid = {}  # tree row id -> raw log line, for the '+' popup
+        fr = ttk.Frame(win)
+        fr.pack(fill='both', expand=True, padx=8, pady=(0, 8))
+        cols = ('exp', 'time', 'type', 'who', 'item', 'line')
+        self.lm_feed = ttk.Treeview(fr, columns=cols, show='headings',
+                                    selectmode='browse')
+        for c, t, w in (('exp', '', 26), ('time', 'Time', 64), ('type', 'Type', 48),
+                        ('who', 'Who', 104), ('item', 'Item', 188),
+                        ('line', 'Their auction', 392)):
+            self.lm_feed.heading(c, text=t)
+            self.lm_feed.column(c, width=w)
+        self.lm_feed.column('exp', anchor='center', stretch=False)
+        self.lm_feed.column('type', anchor='center')
+        # Color encodes both dimensions: hue = kind (SELL green / BUY cyan),
+        # brightness = tier (loud bright / quiet muted).
+        self.lm_feed.tag_configure('SELL_HIGH', foreground='#00ff66')
+        self.lm_feed.tag_configure('SELL_MAYBE', foreground='#5f9e74')
+        self.lm_feed.tag_configure('BUY_HIGH', foreground='#33ccff')
+        self.lm_feed.tag_configure('BUY_MAYBE', foreground='#5f8fa6')
+        self.lm_feed.tag_configure('MUTED', foreground='#666666')  # silenced item
+        sb = ttk.Scrollbar(fr, orient='vertical', command=self.lm_feed.yview)
+        self.lm_feed.configure(yscrollcommand=sb.set)
+        self.lm_feed.pack(side='left', fill='both', expand=True)
+        sb.pack(side='right', fill='y')
+        # Click the '+' column -> raw log popup; click elsewhere -> select row
+        # (which copies '/tell <who> '). Arrow keys still copy via TreeviewSelect.
+        self.lm_feed.bind('<Button-1>', self._lm_feed_click)
+        self.lm_feed.bind('<Button-3>', self._lm_feed_rightclick)  # silence menu
+        self.lm_feed.bind('<<TreeviewSelect>>', self._lm_copy_tell)
+
+    def _lm_guess_log_path(self):
+        """Best default log path: the char-INI guess if that file exists, else
+        the newest eqlog for this server in the registry-discovered Logs dir,
+        else the (possibly missing) INI guess, else blank."""
+        server = self.server_var.get().strip()
+        ini_guess = logmon.LogMonitor.guess_log_path(self._last_ini_path, server)
+        if ini_guess and os.path.isfile(ini_guess):
+            return ini_guess
+        logs = _eq_logs_dir()
+        if logs:
+            newest = _newest_eqlog(logs, server)
+            if newest:
+                return newest
+        return ini_guess or ''
+
+    def _lm_browse(self):
+        cur = os.path.dirname(self.lm_path_var.get())
+        init = cur if cur and os.path.isdir(cur) else (_eq_logs_dir()
+                                                       or self._last_ini_dir or None)
+        path = filedialog.askopenfilename(
+            parent=self._lm_win,  # keep focus on the Log Monitor window after
+            title="Select your EQ log file (eqlog_<Char>_<server>.txt)",
+            initialdir=init,
+            filetypes=[("EQ logs", "eqlog_*.txt"), ("Text", "*.txt"),
+                       ("All files", "*.*")])
+        if path:
+            self.lm_path_var.set(path)
+        # Return focus to the Log Monitor window, not the main app. Defer it:
+        # doing it inline runs before Windows finishes reactivating the dialog's
+        # owner (the main window), which would override us.
+        def _refocus():
+            if self._lm_win is not None and self._lm_win.winfo_exists():
+                self._lm_win.lift()
+                self._lm_win.focus_force()
+        if self._lm_win is not None and self._lm_win.winfo_exists():
+            self._lm_win.after(50, _refocus)
+
+    def _lm_toggle(self):
+        if self._log_monitor is not None:
+            self._lm_stop()
+        else:
+            self._lm_start()
+
+    def _lm_start(self):
+        path = self.lm_path_var.get().strip()
+        if not path:
+            messagebox.showinfo("Log Monitor", "Pick your EQ log file first.")
+            return
+        if not self.inv_loaded or not self.inventory:
+            messagebox.showinfo(
+                "Log Monitor",
+                "Load your inventory first — those are the items I watch for.")
+            return
+        names = [it['name'] for it in self.inventory]
+        # Skip our own auctions: char name comes from eqlog_<Char>_<server>.txt
+        m = re.search(r'eqlog_([^_]+)_', os.path.basename(path), re.I)
+        self_char = m.group(1) if m else None
+
+        def go():
+            mon = logmon.LogMonitor(path, self_char, self._matcher,
+                                    self._lm_on_alert)
+            self._log_monitor = mon
+            mon.start()
+            self.lm_toggle_btn.config(text="Stop")
+            watch = os.path.basename(path)
+            who = f" (skipping {self_char})" if self_char else ""
+            self.lm_status_var.set(f"Watching {watch}{who}")
+            self._log(f"Log monitor started on {watch}")
+
+        if self._matcher is None:
+            # Build the IDF once (~1s over 133k names) off the UI thread.
+            self.lm_status_var.set("Building match index…")
+            self.lm_toggle_btn.config(state='disabled')
+
+            def build():
+                matcher = logmon.Matcher(self.item_db.keys(), names,
+                                         aliases=self._effective_aliases(),
+                                         watchlist=self._load_watchlist())
+
+                def done():
+                    self._matcher = matcher
+                    self.lm_toggle_btn.config(state='normal')
+                    go()
+                self.root.after(0, done)
+            threading.Thread(target=build, daemon=True).start()
+        else:
+            self._matcher.set_inventory(names)  # refresh candidates, idf cached
+            self._matcher.set_aliases(self._effective_aliases())
+            self._matcher.set_watchlist(self._load_watchlist())
+            go()
+
+    def _alias_path(self):
+        return os.path.join(_cache_dir(), 'aliases.json')
+
+    def _effective_aliases(self):
+        """Built-in defaults overlaid with the user's aliases.json (user wins)."""
+        if self._user_aliases is None:
+            self._user_aliases = logmon.load_aliases(self._alias_path())
+        merged = dict(logmon.DEFAULT_ALIASES)
+        merged.update(self._user_aliases)
+        return merged
+
+    def _watchlist_path(self):
+        return os.path.join(_cache_dir(), 'watchlist.json')
+
+    def _load_watchlist(self):
+        if self._watchlist is None:
+            self._watchlist = logmon.load_watchlist(self._watchlist_path())
+        return self._watchlist
+
+    # ----- Silenced auctioneers (mute a spammer; keep showing them greyed) ----
+    def _silenced_path(self):
+        return os.path.join(_cache_dir(), 'silenced.json')
+
+    def _load_silenced(self):
+        """Set of lowercased auctioneer names whose HIGH matches should NOT
+        ding/toast. Reuses the JSON-string-list loader; persists across restarts."""
+        if self._silenced is None:
+            self._silenced = {s.lower()
+                              for s in logmon.load_watchlist(self._silenced_path())}
+        return self._silenced
+
+    def _lm_set_silenced(self, who, on):
+        s = self._load_silenced()
+        (s.add if on else s.discard)(who.lower())
+        try:
+            logmon.save_watchlist(self._silenced_path(), sorted(s))
+        except OSError:
+            pass
+        self._lm_render()  # repaint so the speaker's rows grey/un-grey
+
+    def _lm_feed_rightclick(self, event):
+        """Right-click a row -> silence/unsilence that AUCTIONEER (mutes a trader
+        spamming their whole set), plus a quick copy-tell."""
+        iid = self.lm_feed.identify_row(event.y)
+        if not iid:
+            return
+        vals = self.lm_feed.item(iid)['values']
+        if not vals:
+            return
+        who = vals[3]
+        silenced = who.lower() in self._load_silenced()
+        menu = tk.Menu(self._lm_win, tearoff=0)
+        if silenced:
+            menu.add_command(label=f"Unsilence {who}",
+                             command=lambda: self._lm_set_silenced(who, False))
+        else:
+            menu.add_command(label=f"Silence {who} (mute their dings)",
+                             command=lambda: self._lm_set_silenced(who, True))
+        menu.add_separator()
+        menu.add_command(label=f"Copy  /tell {who}",
+                         command=lambda: (self.lm_feed.selection_set(iid),
+                                          self._lm_copy_tell()))
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    # ----- Alias editor -------------------------------------------------------
+    def _open_alias_editor(self):
+        """Add/remove slang->item aliases. Built-ins are read-only; your own are
+        editable and saved to aliases.json. Changes apply to a running monitor
+        immediately."""
+        if self._alias_win is not None and self._alias_win.winfo_exists():
+            self._alias_win.lift()
+            return
+        self._effective_aliases()  # ensure self._user_aliases is loaded
+        win = tk.Toplevel(self._lm_win or self.root)
+        self._alias_win = win
+        win.title("Aliases — slang → item name")
+        win.configure(bg='#1a1a1a')
+        win.geometry("560x460")
+        win.protocol("WM_DELETE_WINDOW",
+                     lambda: (win.destroy(), setattr(self, '_alias_win', None)))
+
+        ttk.Label(win, text="When a WTB line contains the alias, the item name is "
+                            "matched.\nBuilt-ins are read-only; your own can be removed.",
+                  foreground='#888888').pack(anchor='w', padx=8, pady=(8, 4))
+
+        fr = ttk.Frame(win)
+        fr.pack(fill='both', expand=True, padx=8)
+        self.alias_tree = ttk.Treeview(fr, columns=('alias', 'item', 'src'),
+                                       show='headings', selectmode='browse')
+        for c, t, w in (('alias', 'Alias', 120), ('item', 'Item name', 300),
+                        ('src', 'Source', 90)):
+            self.alias_tree.heading(c, text=t)
+            self.alias_tree.column(c, width=w)
+        self.alias_tree.tag_configure('custom', foreground='#00ff66')
+        self.alias_tree.tag_configure('builtin', foreground='#888888')
+        asb = ttk.Scrollbar(fr, orient='vertical', command=self.alias_tree.yview)
+        self.alias_tree.configure(yscrollcommand=asb.set)
+        self.alias_tree.pack(side='left', fill='both', expand=True)
+        asb.pack(side='right', fill='y')
+
+        add = ttk.Frame(win)
+        add.pack(fill='x', padx=8, pady=6)
+        ttk.Label(add, text="Alias:").pack(side='left')
+        self.alias_key_var = tk.StringVar()
+        ttk.Entry(add, textvariable=self.alias_key_var, width=12).pack(side='left', padx=(2, 8))
+        ttk.Label(add, text="Item:").pack(side='left')
+        self.alias_item_var = tk.StringVar()
+        ttk.Entry(add, textvariable=self.alias_item_var).pack(
+            side='left', fill='x', expand=True, padx=2)
+        ttk.Button(add, text="Add / Update", command=self._alias_add).pack(side='left', padx=4)
+
+        bot = ttk.Frame(win)
+        bot.pack(fill='x', padx=8, pady=(0, 8))
+        ttk.Button(bot, text="Remove selected (yours only)",
+                   command=self._alias_remove).pack(side='left')
+        self.alias_status_var = tk.StringVar(value="")
+        ttk.Label(bot, textvariable=self.alias_status_var,
+                  foreground='#ff9900').pack(side='left', padx=10)
+
+        self._alias_repopulate()
+
+    def _alias_repopulate(self):
+        if self._alias_win is None or not self._alias_win.winfo_exists():
+            return
+        self.alias_tree.delete(*self.alias_tree.get_children())
+        for alias in sorted(self._effective_aliases()):
+            item = self._effective_aliases()[alias]
+            custom = alias in (self._user_aliases or {})
+            self.alias_tree.insert('', 'end', values=(alias, item,
+                                   'yours' if custom else 'built-in'),
+                                   tags=('custom' if custom else 'builtin',))
+
+    def _alias_add(self):
+        alias = self.alias_key_var.get().strip().lower()
+        item = self.alias_item_var.get().strip()
+        if not alias or not item:
+            self.alias_status_var.set("Enter both an alias and an item name.")
+            return
+        if self._user_aliases is None:
+            self._user_aliases = {}
+        self._user_aliases[alias] = item
+        # Soft check: warn (but allow) if the item isn't an exact DB name.
+        warn = "" if item in self.item_db else "  (note: not an exact DB item name)"
+        self._save_and_apply_aliases()
+        self.alias_key_var.set(""); self.alias_item_var.set("")
+        self.alias_status_var.set(f"Saved  {alias} -> {item}{warn}")
+
+    def _alias_remove(self):
+        sel = self.alias_tree.selection()
+        if not sel:
+            return
+        alias = self.alias_tree.item(sel[0])['values'][0]
+        if alias not in (self._user_aliases or {}):
+            self.alias_status_var.set(f"'{alias}' is a built-in - can't remove "
+                                      f"(override it by adding your own).")
+            return
+        del self._user_aliases[alias]
+        self._save_and_apply_aliases()
+        self.alias_status_var.set(f"Removed  {alias}")
+
+    def _save_and_apply_aliases(self):
+        """Persist user aliases and push them to a running matcher live."""
+        try:
+            logmon.save_aliases(self._alias_path(), self._user_aliases)
+        except OSError as e:
+            self.alias_status_var.set(f"Could not save: {e}")
+        if self._matcher is not None:
+            self._matcher.set_aliases(self._effective_aliases())
+        self._alias_repopulate()
+
+    # ----- Watchlist editor ---------------------------------------------------
+    def _open_watchlist_editor(self):
+        """Items you WANT to buy. When someone posts one WTS, you get a BUY lead.
+        Saved to watchlist.json; changes apply to a running monitor immediately."""
+        if self._watch_win is not None and self._watch_win.winfo_exists():
+            self._watch_win.lift()
+            return
+        self._load_watchlist()
+        win = tk.Toplevel(self._lm_win or self.root)
+        self._watch_win = win
+        win.title("Watchlist — items you want to buy")
+        win.configure(bg='#1a1a1a')
+        win.geometry("460x440")
+        win.protocol("WM_DELETE_WINDOW",
+                     lambda: (win.destroy(), setattr(self, '_watch_win', None)))
+
+        ttk.Label(win, text="When someone auctions one of these WTS, you get a "
+                            "BUY lead.\nFull item name, an alias (CoF), OR a "
+                            "distinctive keyword to catch a whole set\n"
+                            "(e.g. 'Nathsar' matches Nathsar Gauntlets/Bracer/…; "
+                            "generic words like 'Boots' won't fire).",
+                  foreground='#888888').pack(anchor='w', padx=8, pady=(8, 4))
+
+        fr = ttk.Frame(win)
+        fr.pack(fill='both', expand=True, padx=8)
+        self.watch_tree = ttk.Treeview(fr, columns=('item',), show='headings',
+                                       selectmode='browse')
+        self.watch_tree.heading('item', text='Item you want')
+        self.watch_tree.column('item', width=400)
+        wsb = ttk.Scrollbar(fr, orient='vertical', command=self.watch_tree.yview)
+        self.watch_tree.configure(yscrollcommand=wsb.set)
+        self.watch_tree.pack(side='left', fill='both', expand=True)
+        wsb.pack(side='right', fill='y')
+
+        add = ttk.Frame(win)
+        add.pack(fill='x', padx=8, pady=6)
+        ttk.Label(add, text="Item:").pack(side='left')
+        self.watch_item_var = tk.StringVar()
+        e = ttk.Entry(add, textvariable=self.watch_item_var)
+        e.pack(side='left', fill='x', expand=True, padx=2)
+        e.bind('<Return>', lambda ev: self._watch_add())
+        ttk.Button(add, text="Add", command=self._watch_add).pack(side='left', padx=4)
+
+        bot = ttk.Frame(win)
+        bot.pack(fill='x', padx=8, pady=(0, 8))
+        ttk.Button(bot, text="Remove selected",
+                   command=self._watch_remove).pack(side='left')
+        self.watch_status_var = tk.StringVar(value="")
+        ttk.Label(bot, textvariable=self.watch_status_var,
+                  foreground='#ff9900').pack(side='left', padx=10)
+
+        self._watch_repopulate()
+
+    def _watch_repopulate(self):
+        if self._watch_win is None or not self._watch_win.winfo_exists():
+            return
+        self.watch_tree.delete(*self.watch_tree.get_children())
+        for item in sorted(self._load_watchlist(), key=str.lower):
+            self.watch_tree.insert('', 'end', values=(item,))
+
+    def _watch_add(self):
+        item = self.watch_item_var.get().strip()
+        if not item:
+            return
+        wl = self._load_watchlist()
+        if item.lower() in (w.lower() for w in wl):
+            self.watch_status_var.set(f"'{item}' is already on the list.")
+            return
+        wl.append(item)
+        warn = "" if item in self.item_db else "  (note: not an exact DB item name)"
+        self._save_and_apply_watchlist()
+        self.watch_item_var.set("")
+        self.watch_status_var.set(f"Added  {item}{warn}")
+
+    def _watch_remove(self):
+        sel = self.watch_tree.selection()
+        if not sel:
+            return
+        item = self.watch_tree.item(sel[0])['values'][0]
+        wl = self._load_watchlist()
+        self._watchlist = [w for w in wl if w != item]
+        self._save_and_apply_watchlist()
+        self.watch_status_var.set(f"Removed  {item}")
+
+    def _save_and_apply_watchlist(self):
+        try:
+            logmon.save_watchlist(self._watchlist_path(), self._load_watchlist())
+        except OSError as e:
+            self.watch_status_var.set(f"Could not save: {e}")
+        if self._matcher is not None:
+            self._matcher.set_watchlist(self._load_watchlist())
+        self._watch_repopulate()
+
+    def _lm_stop(self):
+        if self._log_monitor is not None:
+            self._log_monitor.stop()
+            self._log_monitor = None
+        if self._lm_win is not None and self._lm_win.winfo_exists():
+            self.lm_toggle_btn.config(text="Start")
+            self.lm_status_var.set("Stopped.")
+
+    def _lm_on_alert(self, kind, tier, ts, speaker, item, line):
+        """Called from the tailer thread — marshal onto the UI thread.
+        kind is 'SELL' (they WTB your item) or 'BUY' (they WTS a watchlist item)."""
+        self.root.after(0, lambda: self._lm_add(kind, tier, ts, speaker, item, line))
+
+    def _lm_add(self, kind, tier, ts, speaker, item, line):
+        if self._lm_win is None or not self._lm_win.winfo_exists():
+            return
+        # ts like 'Tue Jun 09 03:14:02 2026' -> just the clock part for display;
+        # keep the full ts to rebuild the raw log line for the '+' popup.
+        parts = ts.split()
+        clock = parts[3] if len(parts) >= 4 else ts
+        self._lm_rows.insert(0, (kind, tier, clock, speaker, item, line, ts))
+        del self._lm_rows[200:]
+        self._lm_render()
+        # A silenced auctioneer still shows in the feed (greyed) but doesn't
+        # ding/toast — kills a trader spamming their whole set.
+        if tier == 'HIGH' and speaker.lower() not in self._load_silenced():
+            if self.lm_sound_var.get():
+                self._lm_beep(kind)
+            self._lm_toast(kind, speaker, item, line)
+
+    def _lm_render(self):
+        """Repaint the feed from the backing list, honoring the 'Loud only'
+        filter. Driven by new alerts and by toggling the filter."""
+        if self._lm_win is None or not self._lm_win.winfo_exists():
+            return
+        loud_only = self.lm_loud_only_var.get()
+        silenced = self._load_silenced()
+        self.lm_feed.delete(*self.lm_feed.get_children())
+        self._lm_raw_by_iid = {}
+        for kind, tier, clock, speaker, item, line, ts in self._lm_rows:
+            if loud_only and tier != 'HIGH':
+                continue
+            tag = 'MUTED' if speaker.lower() in silenced else f"{kind}_{tier}"
+            iid = self.lm_feed.insert('', 'end',
+                                      values=('+', clock, kind, speaker, item, line),
+                                      tags=(tag,))
+            self._lm_raw_by_iid[iid] = f"[{ts}] {speaker} auctions, '{line}'"
+
+    def _lm_feed_click(self, event):
+        """Click the '+' column -> raw log popup (and don't let it select/copy)."""
+        if self.lm_feed.identify_region(event.x, event.y) != 'cell':
+            return
+        if self.lm_feed.identify_column(event.x) == '#1':  # the '+' column
+            iid = self.lm_feed.identify_row(event.y)
+            if iid:
+                self._lm_show_raw(iid)
+            return 'break'
+
+    def _lm_show_raw(self, iid):
+        raw = self._lm_raw_by_iid.get(iid, '')
+        t = tk.Toplevel(self._lm_win or self.root)
+        t.title("Raw auction log")
+        t.configure(bg='#1a1a1a')
+        t.geometry("640x150")
+        t.attributes('-topmost', True)
+        box = tk.Text(t, height=4, wrap='word', bg='#101010', fg='#cccccc',
+                      font=('Consolas', 10), relief='flat')
+        box.pack(fill='both', expand=True, padx=10, pady=10)
+        box.insert('1.0', raw)
+        box.config(state='disabled')
+        ttk.Button(t, text="Close", command=t.destroy).pack(pady=(0, 10))
+
+    def _lm_beep(self, kind='SELL'):
+        """Distinct tones per lead so you know which without looking:
+          SELL (someone wants YOUR item) -> bright rising 'cha-ching'
+          BUY  (a watchlist item is for sale) -> two-note descending 'grab it'."""
+        if winsound is None:
+            return
+        if kind == 'BUY':
+            notes = [(1319, 110), (880, 170)]      # E6 -> A5, descending
+        else:
+            notes = [(988, 90), (1319, 90), (1760, 150)]  # B5-E6-A6, rising
+        def play():
+            try:
+                for freq, dur in notes:
+                    winsound.Beep(freq, dur)
+            except RuntimeError:
+                pass
+        threading.Thread(target=play, daemon=True).start()
+
+    def _lm_toast(self, kind, speaker, item, line):
+        """Small, non-focus-stealing popup in the corner; auto-closes.
+        kind 'SELL' = they want to buy your item; 'BUY' = they're selling one you want."""
+        title = "Sell lead!" if kind == 'SELL' else "Buy lead!"
+        head = f"WTB: {item}" if kind == 'SELL' else f"WTS: {item}"
+        try:
+            t = tk.Toplevel(self.root)
+            t.title(title)
+            t.configure(bg='#202a20')
+            t.attributes('-topmost', True)
+            t.geometry("360x110-20-60")  # bottom-right-ish
+            tk.Label(t, text=head, bg='#202a20', fg='#00ff66',
+                     font=('Consolas', 12, 'bold')).pack(anchor='w', padx=10, pady=(8, 0))
+            tk.Label(t, text=speaker, bg='#202a20', fg='#cccccc',
+                     font=('Consolas', 10, 'bold')).pack(anchor='w', padx=10)
+            tk.Label(t, text=line[:80], bg='#202a20', fg='#aaaaaa',
+                     font=('Consolas', 9), wraplength=340, justify='left').pack(
+                         anchor='w', padx=10)
+            t.bind('<Button-1>', lambda e: t.destroy())
+            t.after(9000, lambda: t.winfo_exists() and t.destroy())
+        except tk.TclError:
+            pass
+
+    def _lm_copy_tell(self, event=None):
+        """Selecting a feed row copies '/tell <who> ' so you can alt-tab to EQ
+        and just Ctrl-V (no squinting at a goofy auctioneer name to retype it)."""
+        sel = self.lm_feed.selection()
+        if not sel:
+            return
+        vals = self.lm_feed.item(sel[0])['values']
+        if not vals:
+            return
+        who = vals[3]  # columns: (exp, time, type, who, item, line)
+        self.root.clipboard_clear()
+        self.root.clipboard_append(f"/tell {who} ")
+        self.lm_copy_var.set(f"Copied  /tell {who}   to clipboard  ->  alt-tab to EQ, Ctrl-V")
+
+    def _lm_clear(self):
+        self._lm_rows = []
+        self._lm_raw_by_iid = {}
+        if self._lm_win is not None and self._lm_win.winfo_exists():
+            self.lm_feed.delete(*self.lm_feed.get_children())
+
+    def _lm_close(self):
+        self._lm_stop()
+        if self._lm_win is not None:
+            self._lm_win.destroy()
+            self._lm_win = None
+
     def _load_db(self):
         self.item_db, self.item_ids = load_item_database(self.db_path)
         if self.item_db:
@@ -736,10 +1388,15 @@ Pricing: tlp-auctions.com"""
             self.status_var.set("ERROR: items.txt.gz not found!")
 
     def _load_inventory(self):
+        # /outputfile inventory dumps into the EQ ROOT (not Logs), so default the
+        # picker there; remember the last folder used after that.
+        init = self._last_inv_dir or _eq_install_dir() or None
         path = filedialog.askopenfilename(
-            title="Select Inventory File", filetypes=[("Text", "*.txt")])
+            title="Select Inventory File", initialdir=init,
+            filetypes=[("Text", "*.txt")])
         if not path:
             return
+        self._last_inv_dir = os.path.dirname(path)
         self.inventory = load_inventory(path)
         self.inv_by_name = {it['name']: it for it in self.inventory}
         self.inv_loaded = True
@@ -964,21 +1621,28 @@ Pricing: tlp-auctions.com"""
             return 0.0
         return v if 0 <= v < 100 else 0.0
 
+    @staticmethod
+    def _round_to_5(plat):
+        """Round a plat value to the nearest 5 so undercut prices land on tidy
+        numbers (300p - 2% = 294 -> 295, not a weird 294)."""
+        return int(round(plat / 5.0)) * 5
+
     def _result_to_price(self, name, res, krono_rate, undercut=0.0):
         """Turn a single bulk-API result into (price, detail) strings.
 
-        When undercut > 0, the price is the median shaved by that percent so it
-        lands just under the going rate; detail still shows the raw median."""
+        Posting prices render in **plain plat** — the API median is an effective
+        plat value, and a kr/plat split (e.g. '1kr 1045p') is rate-dependent and
+        awkward for posting. (krono_rate is unused here; kept for call symmetry.)
+        With undercut > 0 the median is shaved that percent then rounded to 5."""
         if not res or not res.get('hasData'):
             return None, "No price data"
-        median = res.get('medianPlatPrice', 0)
+        median = int(round(res.get('medianPlatPrice', 0)))
         samples = res.get('sampleSize', 0)
-        median_str = format_plat_price(median, krono_rate)
         if undercut:
-            price = format_plat_price(median * (1 - undercut / 100.0), krono_rate)
-            detail = f"Median: {median_str} ({samples} sales) -> -{undercut:g}% = {price}"
-            return price, detail
-        return median_str, f"Median: {median_str} ({samples} sales)"
+            under = self._round_to_5(median * (1 - undercut / 100.0))
+            detail = f"Median: {median}p ({samples} sales) -> -{undercut:g}% = {under}p"
+            return f"{under}p", detail
+        return f"{median}p", f"Median: {median}p ({samples} sales)"
 
     def _price_check(self):
         """Price check the selected item via the bulk endpoint (single id)."""
@@ -1301,6 +1965,7 @@ Pricing: tlp-auctions.com"""
             level, msg = self._validate_eq_char_ini(path)
             if level == 'ok':
                 self._last_ini_dir = os.path.dirname(path)
+                self._last_ini_path = path
                 return path
             if level == 'reject':
                 self._last_ini_dir = os.path.dirname(path)
@@ -1727,7 +2392,7 @@ Pricing: tlp-auctions.com"""
 
 
 def main():
-    parser = argparse.ArgumentParser(description="EQ Auction Forge v1.3.7 - wangel")
+    parser = argparse.ArgumentParser(description="EQ Auction Forge v1.4.0(beta) - wangel")
     parser.add_argument("--db", default=ITEMS_DB)
     args = parser.parse_args()
 

@@ -22,6 +22,9 @@ items.txt
 *.ini
 *.bak
 *-Inventory.txt
+# Local log-monitor calibration data (inventory dumps + eqlog captures)
+Cletus_Logs/
+eqlog_*.txt
 
 # IDE
 .vscode/
