@@ -9,6 +9,7 @@ build/
 # PyInstaller / release packaging
 *.spec
 release_stage/
+EQ_Auction_Forge_v*_Windows.zip
 
 # Extracted item database (regenerated from .gz)
 items.txt

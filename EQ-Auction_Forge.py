@@ -1,4 +1,4 @@
-# eq_auction_builder.py v4
+# EQ-Auction_Forge.py
 # EQ Auction Macro Builder with price checking
 #
 # Features:
@@ -209,7 +209,7 @@ def make_link(itemlink, item_name):
 BULK_PRICE_LIMIT = 10  # API accepts up to 10 item ids per bulk request
 DEFAULT_KRONO_RATE = 4000  # fallback for kr display when the API reports 0
 
-APP_VERSION = "1.3.6"
+APP_VERSION = "1.3.7"
 
 # Identify ourselves to the TLP Auctions API. Their operator asked tool authors
 # to send a custom User-Agent so legit tool traffic isn't mistaken for spam and
@@ -351,9 +351,11 @@ class AuctionBuilder:
         self.inv_by_name = {}  # name -> inventory entry, for count/location lookups
         self.auction_items = []  # list of {'name', 'price', 'count'}
         self.inv_loaded = False
+        # Per-(tree, column) ascending/descending toggle for header sorting.
+        self._sort_state = {}
 
         self.root = tk.Tk()
-        self.root.title("EQ Auction Forge v1.3.6 — by wangel")
+        self.root.title("EQ Auction Forge v1.3.7 — by wangel")
         self.root.configure(bg='#1a1a1a')
         self.root.geometry("1000x800")
         self._build_ui()
@@ -432,6 +434,11 @@ class AuctionBuilder:
         self.inv_only_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(ff, text="Inv only", variable=self.inv_only_var,
                         command=self._apply_filter).pack(side='left', padx=10)
+        # Bags only: hide equipped/bank/keyring, show just items sitting in your
+        # general-inventory bags (location starts with 'General').
+        self.bags_only_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(ff, text="Bags only", variable=self.bags_only_var,
+                        command=self._apply_filter).pack(side='left')
 
         # Tree + scrollbar live in their own frame so a button row can sit
         # below them (mixing pack sides in one parent gets messy otherwise).
@@ -442,9 +449,17 @@ class AuctionBuilder:
         # and add them all at once instead of double-clicking each.
         self.item_tree = ttk.Treeview(tree_frame, columns=cols, show='headings',
                                       height=20, selectmode='extended')
-        self.item_tree.heading('name', text='Item Name')
-        self.item_tree.heading('qty', text='Qty')
-        self.item_tree.heading('location', text='Location')
+        # Click a header to sort by that column (toggles asc/desc). Location
+        # uses a natural sort so 'General 2-Slot10' lands after 'Slot9'.
+        self.item_tree.heading(
+            'name', text='Item Name',
+            command=lambda: self._sort_column(self.item_tree, 'name'))
+        self.item_tree.heading(
+            'qty', text='Qty',
+            command=lambda: self._sort_column(self.item_tree, 'qty'))
+        self.item_tree.heading(
+            'location', text='Location',
+            command=lambda: self._sort_column(self.item_tree, 'location'))
         self.item_tree.column('name', width=280)
         self.item_tree.column('qty', width=40, anchor='center')
         self.item_tree.column('location', width=120)
@@ -481,9 +496,17 @@ class AuctionBuilder:
         self.auc_tree = ttk.Treeview(auc_frame, columns=('name', 'price', 'qty'),
                                      show='headings', height=8,
                                      selectmode='extended')
-        self.auc_tree.heading('name', text='Item')
-        self.auc_tree.heading('price', text='Price')
-        self.auc_tree.heading('qty', text='Qty')
+        # Sortable headers — e.g. after PC All, sort by Price to find/multi-select
+        # the cheap items. Sorting reorders the backing auction_items list too.
+        self.auc_tree.heading(
+            'name', text='Item',
+            command=lambda: self._sort_column(self.auc_tree, 'name'))
+        self.auc_tree.heading(
+            'price', text='Price',
+            command=lambda: self._sort_column(self.auc_tree, 'price'))
+        self.auc_tree.heading(
+            'qty', text='Qty',
+            command=lambda: self._sort_column(self.auc_tree, 'qty'))
         self.auc_tree.column('name', width=190)
         self.auc_tree.column('price', width=80)
         self.auc_tree.column('qty', width=40, anchor='center')
@@ -639,7 +662,7 @@ class AuctionBuilder:
             font=('Consolas', 9), wrap='word', padx=10, pady=10)
         txt.pack(fill='both', expand=True, padx=10, pady=10)
 
-        help_text = """EQ Auction Forge v1.3.6
+        help_text = """EQ Auction Forge v1.3.7
 by wangel
 
 HOW TO USE:
@@ -674,6 +697,12 @@ HOW TO USE:
 TIPS:
 - Uncheck "Inv only" to search ALL 133k+ items
   (useful for WTB macros)
+- Check "Bags only" to hide equipped/bank gear and
+  show just what's sitting in your inventory bags
+- Click any column header to sort. Sort the item
+  list by Location to grab a whole bag at once; sort
+  the auction list by Price (after PC All) to find
+  and delete the cheap stuff. Click again to reverse.
 - Items auto-pack 2+ per line when they fit under
   the 255 character limit
 - Each macro button supports up to 5 lines
@@ -722,12 +751,15 @@ Pricing: tlp-auctions.com"""
         self.item_tree.delete(*self.item_tree.get_children())
         search = self.filter_var.get().strip().lower()
         inv_only = self.inv_only_var.get()
+        bags_only = self.bags_only_var.get()
         count = 0
 
         if inv_only and self.inv_loaded:
             # Sort alphabetically so items are easy to scan/find.
             for item in sorted(self.inventory, key=lambda i: i['name'].lower()):
                 name = item['name']
+                if bags_only and not self._is_bag_location(item.get('location', '')):
+                    continue
                 if search and search not in name.lower():
                     continue
                 if name in self.item_db:
@@ -753,6 +785,81 @@ Pricing: tlp-auctions.com"""
                             inv.get('location', "")))
                 count += 1
         self.item_count_var.set(f"({count})")
+
+    @staticmethod
+    def _is_bag_location(loc):
+        """True if an inventory location is a general-inventory bag slot
+        ('General 1', 'General 2-Slot4'). Excludes equipped gear, Bank,
+        SharedBank, KeyRing, Power Source, etc."""
+        return (loc or '').strip().lower().startswith('general')
+
+    @staticmethod
+    def _natkey(s):
+        """Natural-sort key: split digit runs into ints so 'General 2-Slot10'
+        sorts after 'General 2-Slot9' instead of before it."""
+        return [int(t) if t.isdigit() else t.lower()
+                for t in re.split(r'(\d+)', s or '')]
+
+    def _location_sort_key(self, loc):
+        """Location sort key that keeps the two kinds of slots in separate
+        contiguous blocks instead of sandwiching the General bags between the
+        equipped slots that sort before 'G' (Chest, Face...) and those after
+        (Head, Neck, Bank...). Equipped/bank slots group first, General bags
+        second; each block is natural-sorted within."""
+        return (1 if self._is_bag_location(loc) else 0, self._natkey(loc))
+
+    @staticmethod
+    def _qty_sort_key(v):
+        """Sort 'xN' quantity cells by N; blank (a lone item) counts as 1."""
+        m = re.search(r'\d+', v or '')
+        return int(m.group()) if m else 1
+
+    @staticmethod
+    def _price_sort_key(v):
+        """Sort a displayed price cell ('500p', '2kr 500p', '1kr', '') by its
+        plat value. Unpriced sorts below everything; krono is folded to plat at
+        the default rate purely for ordering."""
+        s = (v or '').strip().lower()
+        if not s:
+            return -1.0
+        kr = re.search(r'(\d+)\s*kr', s)
+        pp = re.search(r'(\d+)\s*p', s)
+        if kr or pp:
+            plat = (int(kr.group(1)) * DEFAULT_KRONO_RATE if kr else 0)
+            plat += int(pp.group(1)) if pp else 0
+            return float(plat)
+        digits = re.sub(r'[^\d.]', '', s)
+        try:
+            return float(digits) if digits else 0.0
+        except ValueError:
+            return 0.0
+
+    def _sort_column(self, tree, col):
+        """Sort a tree by the clicked column header, toggling asc/desc. For the
+        auction tree the backing auction_items list is reordered to match (the
+        row<->index mapping that remove/set-price/select rely on), then the tree
+        is rebuilt; the inventory tree is display-only so its rows just move."""
+        key_funcs = {'price': self._price_sort_key, 'qty': self._qty_sort_key,
+                     'location': self._location_sort_key}
+        keyf = key_funcs.get(col, lambda s: (s or '').lower())
+        state_key = (str(tree), col)
+        descending = self._sort_state.get(state_key, False)
+        rows = [(tree.index(iid), iid) for iid in tree.get_children('')]
+        rows.sort(key=lambda r: keyf(tree.set(r[1], col)), reverse=descending)
+        if tree is self.auc_tree:
+            self.auction_items = [self.auction_items[i] for i, _ in rows
+                                  if i < len(self.auction_items)]
+            self._refresh_auction_tree()
+        else:
+            for pos, (_, iid) in enumerate(rows):
+                tree.move(iid, '', pos)
+        self._sort_state[state_key] = not descending
+
+    def _refresh_auction_tree(self):
+        """Rebuild every auction row from self.auction_items (in list order)."""
+        self.auc_tree.delete(*self.auc_tree.get_children())
+        for item in self.auction_items:
+            self.auc_tree.insert('', 'end', values=self._auc_values(item))
 
     def _bind_select_all(self, tree):
         """Wire Ctrl+A on a tree to select every row (explorer-style). Returns
@@ -1620,7 +1727,7 @@ Pricing: tlp-auctions.com"""
 
 
 def main():
-    parser = argparse.ArgumentParser(description="EQ Auction Forge v1.3.6 - wangel")
+    parser = argparse.ArgumentParser(description="EQ Auction Forge v1.3.7 - wangel")
     parser.add_argument("--db", default=ITEMS_DB)
     args = parser.parse_args()
 
