@@ -18,6 +18,8 @@ import json
 import argparse
 import tempfile
 import threading
+import re
+import webbrowser
 import tkinter as tk
 from datetime import datetime, timezone
 from tkinter import ttk, filedialog, messagebox, scrolledtext
@@ -207,7 +209,7 @@ def make_link(itemlink, item_name):
 BULK_PRICE_LIMIT = 10  # API accepts up to 10 item ids per bulk request
 DEFAULT_KRONO_RATE = 4000  # fallback for kr display when the API reports 0
 
-APP_VERSION = "1.3.5"
+APP_VERSION = "1.3.6"
 
 # Identify ourselves to the TLP Auctions API. Their operator asked tool authors
 # to send a custom User-Agent so legit tool traffic isn't mistaken for spam and
@@ -219,6 +221,33 @@ _API_HEADERS = {
     'Accept': 'application/json',
     'Content-Type': 'application/json',
 }
+
+# Startup update check against GitHub releases.
+RELEASES_API = "https://api.github.com/repos/wangel/EQ_Auction_Forge/releases/latest"
+RELEASES_URL = "https://github.com/wangel/EQ_Auction_Forge/releases"
+
+
+def _version_tuple(v):
+    """'v1.3.6' / '1.3.6' -> (1, 3, 6). Non-numeric parts are ignored so the
+    comparison never raises on a weird tag."""
+    return tuple(int(n) for n in re.findall(r'\d+', v or ''))
+
+
+def check_latest_release():
+    """Return the latest GitHub release version (e.g. '1.3.6'), or None on any
+    failure. Best-effort and never raises — a version check must not break
+    startup. Uses default (verified) SSL since GitHub's cert is valid."""
+    try:
+        req = Request(RELEASES_API, headers={
+            'User-Agent': _API_HEADERS['User-Agent'],
+            'Accept': 'application/vnd.github+json',
+        })
+        with urlopen(req, timeout=6) as r:
+            data = json.loads(r.read().decode())
+        tag = (data.get('tag_name') or '').lstrip('v').strip()
+        return tag or None
+    except Exception:
+        return None
 
 
 def format_plat_price(median_pp, krono_rate):
@@ -324,11 +353,12 @@ class AuctionBuilder:
         self.inv_loaded = False
 
         self.root = tk.Tk()
-        self.root.title("EQ Auction Forge v1.3.5 — by wangel")
+        self.root.title("EQ Auction Forge v1.3.6 — by wangel")
         self.root.configure(bg='#1a1a1a')
         self.root.geometry("1000x800")
         self._build_ui()
         self.root.after(100, self._load_db)
+        self.root.after(800, self._check_update)
 
     def _build_ui(self):
         style = ttk.Style()
@@ -366,6 +396,15 @@ class AuctionBuilder:
         self.db_count_var = tk.StringVar()
         ttk.Label(top, textvariable=self.db_count_var, foreground='#00ff00').pack(side='right')
         ttk.Button(top, text="Help", command=self._show_help).pack(side='right', padx=5)
+
+        # Update nudge — stays blank/invisible unless a newer release exists.
+        # Click it to open the releases page.
+        self.update_var = tk.StringVar(value="")
+        self._update_lbl = ttk.Label(top, textvariable=self.update_var,
+                                     foreground='#FFA500',
+                                     font=('Consolas', 9, 'bold'), cursor='hand2')
+        self._update_lbl.pack(side='right', padx=8)
+        self._update_lbl.bind('<Button-1>', lambda e: webbrowser.open(RELEASES_URL))
 
         # === Paned ===
         paned = ttk.PanedWindow(self.root, orient='horizontal')
@@ -512,8 +551,11 @@ class AuctionBuilder:
         tf.pack(fill='x', pady=3)
         ttk.Label(tf, text="Link if ≥:").pack(side='left')
         self.threshold_var = tk.StringVar(value="600p")
-        ttk.Entry(tf, textvariable=self.threshold_var, width=7).pack(side='left', padx=5)
-        ttk.Label(tf, text="cheaper → plain text  |  blank/0 = link everything",
+        ttk.Entry(tf, textvariable=self.threshold_var, width=6).pack(side='left', padx=(5, 8))
+        ttk.Label(tf, text="Vendor <:").pack(side='left')
+        self.vendor_var = tk.StringVar(value="100p")
+        ttk.Entry(tf, textvariable=self.vendor_var, width=6).pack(side='left', padx=5)
+        ttk.Label(tf, text="≥ link · < vendor = trash (skipped) · blank/0 = off",
                   foreground='#888888', font=('Consolas', 8)).pack(side='left')
 
         # Generate / Copy
@@ -597,7 +639,7 @@ class AuctionBuilder:
             font=('Consolas', 9), wrap='word', padx=10, pady=10)
         txt.pack(fill='both', expand=True, padx=10, pady=10)
 
-        help_text = """EQ Auction Forge v1.3.5
+        help_text = """EQ Auction Forge v1.3.6
 by wangel
 
 HOW TO USE:
@@ -1048,6 +1090,7 @@ Pricing: tlp-auctions.com"""
             return
         try:
             payload = {'threshold': self.threshold_var.get(),
+                       'vendor': self.vendor_var.get(),
                        'items': self.auction_items}
             with open(path, 'w', encoding='utf-8') as f:
                 json.dump(payload, f, indent=2)
@@ -1071,6 +1114,8 @@ Pricing: tlp-auctions.com"""
             self._clear()
             if isinstance(data, dict) and 'threshold' in data:
                 self.threshold_var.set(data.get('threshold', ''))
+            if isinstance(data, dict) and 'vendor' in data:
+                self.vendor_var.set(data.get('vendor', ''))
             for item in items:
                 name = item.get('name', '')
                 price = item.get('price', '')
@@ -1298,11 +1343,12 @@ Pricing: tlp-auctions.com"""
             except Exception:
                 pass
 
-    def _threshold_plat(self):
-        """Read the 'Link if >=' box as a plat value. Returns an int; 0 means
-        the split is OFF (link everything — the classic behavior). A 'kr' unit
-        is converted with the default krono rate. Blank/invalid -> 0."""
-        raw = self.threshold_var.get().strip().lower().replace(',', '').replace(' ', '')
+    @staticmethod
+    def _parse_plat_value(raw):
+        """Parse a price box ('600', '600p', '1kr') into a plat int. 0 means
+        OFF. A 'kr' unit is converted with the default krono rate. Blank or
+        invalid -> 0."""
+        raw = (raw or '').strip().lower().replace(',', '').replace(' ', '')
         if not raw:
             return 0
         mult = 1
@@ -1316,6 +1362,16 @@ Pricing: tlp-auctions.com"""
             return max(int(float(raw) * mult), 0)
         except ValueError:
             return 0
+
+    def _threshold_plat(self):
+        """Plat floor at/above which items go out as clickable links.
+        0 = link everything (classic behavior)."""
+        return self._parse_plat_value(self.threshold_var.get())
+
+    def _vendor_plat(self):
+        """Plat floor BELOW which a priced item is vendor trash, dropped from
+        the macros and reported. 0 = keep everything."""
+        return self._parse_plat_value(self.vendor_var.get())
 
     @staticmethod
     def _classify_price(price_str):
@@ -1384,6 +1440,43 @@ Pricing: tlp-auctions.com"""
             written += 1
         return out, preview, overflow, written, page
 
+    def _report_trash(self, trash, vendor_min):
+        """Log + popup the vendor-trash items with their bag locations, so the
+        user knows exactly what to go sell to a vendor."""
+        if not trash:
+            return
+        rows = []
+        for it in trash:
+            loc = self.inv_by_name.get(it['name'], {}).get('location', '?')
+            rows.append((it['name'], it.get('price', ''), loc))
+            self._log(f"  TRASH < {vendor_min}p: {it['name']} "
+                      f"({it.get('price', '')}) @ {loc}")
+        shown = rows[:15]
+        body = "\n".join(f"• {n} ({p}) — {loc}" for n, p, loc in shown)
+        if len(rows) > len(shown):
+            body += f"\n…and {len(rows) - len(shown)} more (see log)."
+        messagebox.showinfo(
+            "Go vendor these — they're trash",
+            f"{len(trash)} item(s) priced under {vendor_min}p were left OUT of "
+            f"your macros. Go vendor them:\n\n{body}")
+
+    def _check_update(self):
+        """Background check for a newer GitHub release. Non-blocking and silent
+        on failure — never nags when offline, already current, or ahead."""
+        def work():
+            latest = check_latest_release()
+            if not latest:
+                return
+            cur, new = _version_tuple(APP_VERSION), _version_tuple(latest)
+            if new and cur and new > cur:
+                self.root.after(0, lambda: self._show_update(latest))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _show_update(self, latest):
+        self.update_var.set(f"⬆ v{latest} available")
+        self._log(f"Update available: v{latest} (you have v{APP_VERSION}) — "
+                  f"{RELEASES_URL}")
+
     def _generate(self):
         if not self.auction_items:
             messagebox.showwarning("Warning", "No items in auction")
@@ -1401,10 +1494,30 @@ Pricing: tlp-auctions.com"""
         prefix = self.prefix_var.get()
         suffix = self.suffix_var.get()
         threshold = self._threshold_plat()
+        vendor_min = self._vendor_plat()
 
-        # Every auction item needs a DB link for the link group — bail early
-        # (and clearly) if one is missing rather than half-generating.
+        # Band 1 (trash): priced strictly under the vendor floor. Krono and
+        # unpriced items are never trash — we won't call something junk we
+        # can't price. Trash is dropped from every macro and reported with
+        # bag locations so you can go vendor it.
+        trash, sellable = [], []
         for item in self.auction_items:
+            kind, plat = self._classify_price(item['price'])
+            if vendor_min > 0 and kind == 'plat' and plat < vendor_min:
+                trash.append(item)
+            else:
+                sellable.append(item)
+
+        if not sellable:
+            self._report_trash(trash, vendor_min)
+            messagebox.showinfo(
+                "All trash", "Every priced item is below the vendor floor — "
+                "nothing to auction. Go vendor them!")
+            return
+
+        # Every sellable item needs a DB link for the link group — bail early
+        # (and clearly) if one is missing rather than half-generating.
+        for item in sellable:
             if not self.item_db.get(item['name']):
                 messagebox.showwarning("Missing", f"No link: {item['name']}")
                 return
@@ -1425,13 +1538,13 @@ Pricing: tlp-auctions.com"""
         if threshold <= 0:
             # Split OFF -> classic behavior: everything links, WTS#, at `page`.
             lines = self._pack_to_lines(
-                [link_token(i) for i in self.auction_items], prefix, suffix, ", ")
+                [link_token(i) for i in sellable], prefix, suffix, ", ")
             out, preview, overflow, _, _ = self._buttons_from_lines(lines, "WTS", page)
             self._log(f"Generated {len(preview)} button(s) (link everything)")
         else:
             # Split ON -> cheap items to compact text, movers/krono to links.
             text_items, link_items = [], []
-            for item in self.auction_items:
+            for item in sellable:
                 kind, plat = self._classify_price(item['price'])
                 if kind == 'krono' or (kind == 'plat' and plat >= threshold):
                     link_items.append(item)
@@ -1473,6 +1586,8 @@ Pricing: tlp-auctions.com"""
                 clean = line.replace(DC2, '|')
                 self.output_text.insert('end', f"  L{i} ({len(line)}c): {clean}\n")
 
+        self._report_trash(trash, vendor_min)
+
         if unpriced:
             messagebox.showinfo(
                 "Unpriced items",
@@ -1505,7 +1620,7 @@ Pricing: tlp-auctions.com"""
 
 
 def main():
-    parser = argparse.ArgumentParser(description="EQ Auction Forge v1.3.5 - wangel")
+    parser = argparse.ArgumentParser(description="EQ Auction Forge v1.3.6 - wangel")
     parser.add_argument("--db", default=ITEMS_DB)
     args = parser.parse_args()
 
