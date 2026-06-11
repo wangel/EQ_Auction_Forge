@@ -161,12 +161,15 @@ _ssl_ctx.verify_mode = ssl.CERT_NONE
 
 
 def load_item_database(gz_path):
-    """Load the item DB. Returns (links, ids):
-      links: name -> itemlink (hash+name) for building clickable links
-      ids:   name -> item id (int) for the bulk price API
+    """Load the item DB. Returns (links, ids, prices):
+      links:  name -> itemlink (hash+name) for building clickable links
+      ids:    name -> item id (int) for the bulk price API
+      prices: name -> base merchant value in COPPER (the 'price' column),
+              used to estimate NPC vendor value (1pp = 1000cp)
     """
     items = {}
     ids = {}
+    prices = {}
     txt_path = os.path.join(_cache_dir(), 'items.txt')
     gz_ok = os.path.isfile(gz_path)
     # Re-extract when the cache is missing OR the bundled .gz is newer than the
@@ -181,7 +184,7 @@ def load_item_database(gz_path):
     if stale:
         if not gz_ok:
             if not os.path.isfile(txt_path):
-                return items, ids          # no source and no cache
+                return items, ids, prices      # no source and no cache
         else:
             print(f"  Extracting {gz_path} (new/updated database)...")
             with gzip.open(gz_path, 'rt', encoding='utf-8', errors='ignore') as f:
@@ -199,10 +202,14 @@ def load_item_database(gz_path):
                     item_id = row.get('id', '').strip()
                     if item_id.isdigit() and name not in ids:
                         ids[name] = int(item_id)
+                    if name not in prices:
+                        pr = row.get('price', '').strip()
+                        if pr.isdigit():
+                            prices[name] = int(pr)
             except Exception:
                 continue
     print(f"  {len(items)} items loaded")
-    return items, ids
+    return items, ids, prices
 
 
 # Worthless newbie/starter items that clutter the inventory list but never get
@@ -405,11 +412,37 @@ def format_posting_price(plat, krono):
     return "—"
 
 
+# --- NPC vendor value -------------------------------------------------------
+# What an NPC merchant pays you for an item = base_value x M(CHA), where M is
+# CHARACTER-WIDE (item-independent; 'sellrate' does NOT affect buyback on Live).
+# Calibrated from measured Frostreaver (EQ Live TLP) home-vendor buyback — NOT
+# the EQEmu rule constants (those don't govern Daybreak). Measured: M rises a
+# flat ~0.4%/CHA and HARD-CAPS at 1/1.05 (~95.24%, the merchant markup
+# reciprocal), reached around CHA ~92 — beyond that more CHA does nothing
+# (verified: CHA 95 and 130 give the identical payout). Two non-capped points
+# (65->0.844, 80->0.904) set the line. Re-measure if it drifts / for other factions.
+_VENDOR_SLOPE = 0.004           # M gained per CHA point
+_VENDOR_INTERCEPT = 0.584       # M = SLOPE*CHA + INTERCEPT, below the cap
+_VENDOR_CAP = 1.0 / 1.05        # ~0.95238 ceiling, reached ~CHA 92
+
+
+def vendor_multiplier(cha):
+    """Fraction of an item's base value an NPC pays you at the given CHA — a flat
+    line that hard-caps at _VENDOR_CAP (so high CHA past ~92 gains nothing)."""
+    return max(0.0, min(_VENDOR_SLOPE * cha + _VENDOR_INTERCEPT, _VENDOR_CAP))
+
+
+def vendor_value_pp(price_cp, cha):
+    """Estimated NPC buyback in plat (float) for a base price in copper."""
+    return (price_cp / 1000.0) * vendor_multiplier(cha)
+
+
 class AuctionBuilder:
     def __init__(self, db_path=ITEMS_DB):
         self.db_path = db_path
         self.item_db = {}
         self.item_ids = {}
+        self.item_prices = {}  # name -> base value in copper (for vendor estimate)
         self.inventory = []
         self.inv_by_name = {}  # name -> inventory entry, for count/location lookups
         self.auction_items = []  # list of {'name', 'price', 'count'}
@@ -431,10 +464,24 @@ class AuctionBuilder:
         self.root = tk.Tk()
         self.root.title("EQ Auction Forge v1.4.0(beta) — by wangel")
         self.root.configure(bg='#1a1a1a')
-        self.root.geometry("1000x800")
+        # Open wide enough for the right-side price controls + columns, centered,
+        # with a sane minimum so it can't be squished into uselessness. Resizes
+        # freely from there.
+        self._center_window(1250, 840, min_w=1040, min_h=620)
         self._build_ui()
         self.root.after(100, self._load_db)
         self.root.after(800, self._check_update)
+
+    def _center_window(self, w, h, min_w=None, min_h=None):
+        """Open at w×h centered on screen — clamped to fit smaller screens — and
+        set a minimum size so it can't be squished. Free to resize after."""
+        self.root.update_idletasks()
+        sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+        w, h = min(w, sw - 40), min(h, sh - 80)
+        x, y = max((sw - w) // 2, 0), max((sh - h) // 3, 0)
+        self.root.geometry(f"{w}x{h}+{x}+{y}")
+        if min_w and min_h:
+            self.root.minsize(min(min_w, w), min(min_h, h))
 
     def _build_ui(self):
         style = ttk.Style()
@@ -514,12 +561,19 @@ class AuctionBuilder:
         self.bags_only_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(ff, text="Bags only", variable=self.bags_only_var,
                         command=self._apply_filter).pack(side='left')
+        # Your character's CHA -> drives the "Vendor pp" estimate column. Default
+        # 75 (Human baseline; base-race CHA averages ~60 but real leveled/buffed
+        # toons run higher) — editable per character.
+        ttk.Label(ff, text="CHA:").pack(side='left', padx=(10, 2))
+        self.cha_var = tk.StringVar(value="75")
+        ttk.Entry(ff, textvariable=self.cha_var, width=5).pack(side='left')
+        self.cha_var.trace_add('write', self._on_cha_change)
 
         # Tree + scrollbar live in their own frame so a button row can sit
         # below them (mixing pack sides in one parent gets messy otherwise).
         tree_frame = ttk.Frame(left)
         tree_frame.pack(side='top', fill='both', expand=True)
-        cols = ('name', 'qty', 'location')
+        cols = ('name', 'qty', 'location', 'vendor')
         # selectmode='extended' lets the user shift/ctrl-click a range of items
         # and add them all at once instead of double-clicking each.
         self.item_tree = ttk.Treeview(tree_frame, columns=cols, show='headings',
@@ -535,9 +589,13 @@ class AuctionBuilder:
         self.item_tree.heading(
             'location', text='Location',
             command=lambda: self._sort_column(self.item_tree, 'location'))
-        self.item_tree.column('name', width=280)
+        self.item_tree.heading(
+            'vendor', text='Vendor pp',
+            command=lambda: self._sort_column(self.item_tree, 'vendor'))
+        self.item_tree.column('name', width=250)
         self.item_tree.column('qty', width=40, anchor='center')
-        self.item_tree.column('location', width=120)
+        self.item_tree.column('location', width=110)
+        self.item_tree.column('vendor', width=64, anchor='e')
         sb = ttk.Scrollbar(tree_frame, orient='vertical', command=self.item_tree.yview)
         self.item_tree.configure(yscrollcommand=sb.set)
         self.item_tree.pack(side='left', fill='both', expand=True)
@@ -568,7 +626,7 @@ class AuctionBuilder:
         auc_frame = ttk.Frame(right)
         auc_frame.pack(fill='both', expand=True)
         # extended selectmode so several rows can be removed/repriced at once.
-        self.auc_tree = ttk.Treeview(auc_frame, columns=('name', 'price', 'qty'),
+        self.auc_tree = ttk.Treeview(auc_frame, columns=('name', 'price', 'qty', 'vendor'),
                                      show='headings', height=8,
                                      selectmode='extended')
         # Sortable headers — e.g. after PC All, sort by Price to find/multi-select
@@ -582,9 +640,15 @@ class AuctionBuilder:
         self.auc_tree.heading(
             'qty', text='Qty',
             command=lambda: self._sort_column(self.auc_tree, 'qty'))
-        self.auc_tree.column('name', width=190)
-        self.auc_tree.column('price', width=80)
-        self.auc_tree.column('qty', width=40, anchor='center')
+        self.auc_tree.heading(
+            'vendor', text='Vendor',
+            command=lambda: self._sort_column(self.auc_tree, 'vendor'))
+        self.auc_tree.column('name', width=170)
+        self.auc_tree.column('price', width=70)
+        self.auc_tree.column('qty', width=36, anchor='center')
+        self.auc_tree.column('vendor', width=60, anchor='e')
+        # Orange = worth more to a vendor than to players (auto-excluded from macros).
+        self.auc_tree.tag_configure('VENDOR', foreground='#ff9900')
         auc_sb = ttk.Scrollbar(auc_frame, orient='vertical', command=self.auc_tree.yview)
         self.auc_tree.configure(yscrollcommand=auc_sb.set)
         self.auc_tree.pack(side='left', fill='both', expand=True)
@@ -650,10 +714,8 @@ class AuctionBuilder:
         ttk.Label(tf, text="Link if ≥:").pack(side='left')
         self.threshold_var = tk.StringVar(value="600p")
         ttk.Entry(tf, textvariable=self.threshold_var, width=6).pack(side='left', padx=(5, 8))
-        ttk.Label(tf, text="Vendor <:").pack(side='left')
-        self.vendor_var = tk.StringVar(value="100p")
-        ttk.Entry(tf, textvariable=self.vendor_var, width=6).pack(side='left', padx=5)
-        ttk.Label(tf, text="≥ link · < vendor = trash (skipped) · blank/0 = off",
+        ttk.Label(tf, text="≥ link · below = text · items worth more to a vendor "
+                           "are auto-excluded (price-check first)",
                   foreground='#888888', font=('Consolas', 8)).pack(side='left')
 
         # Generate / Copy
@@ -1380,7 +1442,7 @@ Pricing: tlp-auctions.com"""
             self._lm_win = None
 
     def _load_db(self):
-        self.item_db, self.item_ids = load_item_database(self.db_path)
+        self.item_db, self.item_ids, self.item_prices = load_item_database(self.db_path)
         if self.item_db:
             self.db_count_var.set(f"{len(self.item_db)} items in DB")
             self.status_var.set("Ready")
@@ -1423,7 +1485,7 @@ Pricing: tlp-auctions.com"""
                     self.item_tree.insert(
                         '', 'end',
                         values=(name, self._qty_str(item.get('count', 1)),
-                                item['location']))
+                                item['location'], self._vendor_str(name)))
                     count += 1
                     if count >= 200:
                         break
@@ -1439,9 +1501,34 @@ Pricing: tlp-auctions.com"""
                 self.item_tree.insert(
                     '', 'end',
                     values=(name, self._qty_str(inv.get('count', 1)),
-                            inv.get('location', "")))
+                            inv.get('location', ""), self._vendor_str(name)))
                 count += 1
         self.item_count_var.set(f"({count})")
+
+    def _on_cha_change(self, *_a):
+        """CHA edited -> refresh the inventory Vendor column and re-flag the
+        auction list (vendor values just changed)."""
+        self._apply_filter()
+        if hasattr(self, 'auc_tree'):
+            self._refresh_vendor_flags()
+
+    def _cha(self):
+        """Player CHA from the box, or None if blank/invalid."""
+        try:
+            v = int(self.cha_var.get().strip())
+            return v if v > 0 else None
+        except (ValueError, AttributeError):
+            return None
+
+    def _vendor_str(self, name):
+        """Vendor-value cell for an item: base price x M(CHA), in plat. Blank
+        when CHA isn't set or the item has no DB price."""
+        cha = self._cha()
+        price = self.item_prices.get(name)
+        if cha is None or not price:
+            return ""
+        pp = vendor_value_pp(price, cha)
+        return f"{pp:.0f}p" if pp >= 1 else "<1p"
 
     @staticmethod
     def _is_bag_location(loc):
@@ -1497,7 +1584,8 @@ Pricing: tlp-auctions.com"""
         row<->index mapping that remove/set-price/select rely on), then the tree
         is rebuilt; the inventory tree is display-only so its rows just move."""
         key_funcs = {'price': self._price_sort_key, 'qty': self._qty_sort_key,
-                     'location': self._location_sort_key}
+                     'location': self._location_sort_key,
+                     'vendor': self._price_sort_key}  # 'Xp'/'<1p'/'' -> plat
         keyf = key_funcs.get(col, lambda s: (s or '').lower())
         state_key = (str(tree), col)
         descending = self._sort_state.get(state_key, False)
@@ -1552,9 +1640,10 @@ Pricing: tlp-auctions.com"""
         return f"x{count}" if count > 1 else ""
 
     def _auc_values(self, item):
-        """Tree row tuple for an auction item: (name, price, qty)."""
+        """Tree row tuple for an auction item: (name, price, qty, vendor)."""
         return (item['name'], item.get('price', ''),
-                self._qty_str(item.get('count', 1)))
+                self._qty_str(item.get('count', 1)),
+                self._vendor_str(item['name']))
 
     def _add_rows_to_auction(self, sel):
         """Add the given item-tree rows to the auction list."""
@@ -1608,6 +1697,7 @@ Pricing: tlp-auctions.com"""
             if idx < len(self.auction_items):
                 self.auction_items[idx]['price'] = price
                 self.auc_tree.item(iid, values=self._auc_values(self.auction_items[idx]))
+        self._refresh_vendor_flags()  # re-color now that prices changed
 
     def _undercut_pct(self):
         """Read the Undercut % box. Returns a float in [0, 100); 0 if blank or
@@ -1708,9 +1798,46 @@ Pricing: tlp-auctions.com"""
                         name, results.get(item_id), krono_rate, undercut)
                     self.root.after(0, lambda n=name, p=price, d=detail, i=idx:
                                     self._on_price_result_update(n, p, d, i))
-            self.root.after(0, lambda: self._log("Price check complete!"))
+            self.root.after(0, self._pc_all_done)
 
         threading.Thread(target=do_all, daemon=True).start()
+
+    def _pc_all_done(self):
+        """After PC All: log, color vendor-better rows, and alert which ones
+        will sell to a vendor for more (and thus drop out of any macro)."""
+        self._log("Price check complete!")
+        flagged = self._refresh_vendor_flags()
+        if not flagged:
+            return
+        lines = []
+        for it in flagged:
+            vpp = self._vendor_pp(it['name'])
+            vstr = f"{vpp:.0f}p" if vpp is not None else "?"
+            lines.append(f"• {it['name']}: player {it.get('price', '')} / vendor {vstr}")
+        shown = lines[:15]
+        more = (f"\n…and {len(lines) - len(shown)} more (see log)."
+                if len(lines) > len(shown) else "")
+        messagebox.showinfo(
+            "Worth more to a vendor",
+            f"{len(flagged)} item(s) will sell to an NPC vendor for more than to "
+            f"players (at CHA {self._cha()}). They're flagged orange and will be "
+            f"left OUT of any macro you generate:\n\n" + "\n".join(shown) + more)
+
+    def _refresh_vendor_flags(self):
+        """Re-tag auction rows orange when worth more to a vendor than to players
+        (post-undercut). Returns the flagged items. Cheap; safe to call often."""
+        flagged = []
+        for idx, iid in enumerate(self.auc_tree.get_children()):
+            if idx >= len(self.auction_items):
+                break
+            item = self.auction_items[idx]
+            trash = self._is_vendor_trash(item)
+            # Re-render values too (refreshes the Vendor column on CHA change).
+            self.auc_tree.item(iid, values=self._auc_values(item),
+                               tags=('VENDOR',) if trash else ())
+            if trash:
+                flagged.append(item)
+        return flagged
 
     def _on_price_result(self, name, price, detail):
         self._log(f"  {name}: {detail}")
@@ -1861,7 +1988,6 @@ Pricing: tlp-auctions.com"""
             return
         try:
             payload = {'threshold': self.threshold_var.get(),
-                       'vendor': self.vendor_var.get(),
                        'items': self.auction_items}
             with open(path, 'w', encoding='utf-8') as f:
                 json.dump(payload, f, indent=2)
@@ -1885,8 +2011,8 @@ Pricing: tlp-auctions.com"""
             self._clear()
             if isinstance(data, dict) and 'threshold' in data:
                 self.threshold_var.set(data.get('threshold', ''))
-            if isinstance(data, dict) and 'vendor' in data:
-                self.vendor_var.set(data.get('vendor', ''))
+            # 'vendor' (old fixed floor) is ignored — superseded by the
+            # CHA-based vendor-value comparison.
             for item in items:
                 name = item.get('name', '')
                 price = item.get('price', '')
@@ -2140,10 +2266,24 @@ Pricing: tlp-auctions.com"""
         0 = link everything (classic behavior)."""
         return self._parse_plat_value(self.threshold_var.get())
 
-    def _vendor_plat(self):
-        """Plat floor BELOW which a priced item is vendor trash, dropped from
-        the macros and reported. 0 = keep everything."""
-        return self._parse_plat_value(self.vendor_var.get())
+    def _vendor_pp(self, name):
+        """Estimated NPC buyback (plat float) for an item at the current CHA, or
+        None if CHA isn't set / the item has no DB base price."""
+        cha = self._cha()
+        price = self.item_prices.get(name)
+        if cha is None or not price:
+            return None
+        return vendor_value_pp(price, cha)
+
+    def _is_vendor_trash(self, item):
+        """True if this priced item is worth at least as much to an NPC vendor as
+        you'd net from a player (post-undercut price already applied). Unpriced /
+        krono items are never trash — we don't junk what we can't compare."""
+        kind, plat = self._classify_price(item.get('price', ''))
+        if kind != 'plat':
+            return False
+        vpp = self._vendor_pp(item['name'])
+        return vpp is not None and vpp >= plat
 
     @staticmethod
     def _classify_price(price_str):
@@ -2212,25 +2352,28 @@ Pricing: tlp-auctions.com"""
             written += 1
         return out, preview, overflow, written, page
 
-    def _report_trash(self, trash, vendor_min):
-        """Log + popup the vendor-trash items with their bag locations, so the
-        user knows exactly what to go sell to a vendor."""
+    def _report_trash(self, trash):
+        """Log + popup the vendor-trash items (worth more to an NPC than to
+        players) with their bag locations, so you know what to go sell."""
         if not trash:
             return
         rows = []
         for it in trash:
             loc = self.inv_by_name.get(it['name'], {}).get('location', '?')
-            rows.append((it['name'], it.get('price', ''), loc))
-            self._log(f"  TRASH < {vendor_min}p: {it['name']} "
-                      f"({it.get('price', '')}) @ {loc}")
+            vpp = self._vendor_pp(it['name'])
+            vstr = f"{vpp:.0f}p" if vpp is not None else "?"
+            rows.append((it['name'], it.get('price', ''), vstr, loc))
+            self._log(f"  VENDOR ({vstr} vs {it.get('price', '')}): "
+                      f"{it['name']} @ {loc}")
         shown = rows[:15]
-        body = "\n".join(f"• {n} ({p}) — {loc}" for n, p, loc in shown)
+        body = "\n".join(f"• {n}: player {p} / vendor {v} — {loc}"
+                         for n, p, v, loc in shown)
         if len(rows) > len(shown):
             body += f"\n…and {len(rows) - len(shown)} more (see log)."
         messagebox.showinfo(
-            "Go vendor these — they're trash",
-            f"{len(trash)} item(s) priced under {vendor_min}p were left OUT of "
-            f"your macros. Go vendor them:\n\n{body}")
+            "Go vendor these",
+            f"{len(trash)} item(s) are worth more to a vendor than to players, "
+            f"so they were left OUT of your macros:\n\n{body}")
 
     def _check_update(self):
         """Background check for a newer GitHub release. Non-blocking and silent
@@ -2266,25 +2409,19 @@ Pricing: tlp-auctions.com"""
         prefix = self.prefix_var.get()
         suffix = self.suffix_var.get()
         threshold = self._threshold_plat()
-        vendor_min = self._vendor_plat()
 
-        # Band 1 (trash): priced strictly under the vendor floor. Krono and
-        # unpriced items are never trash — we won't call something junk we
-        # can't price. Trash is dropped from every macro and reported with
-        # bag locations so you can go vendor it.
+        # Band 1 (trash): items worth at least as much to an NPC vendor as you'd
+        # net from a player (post-undercut). Krono/unpriced never trash. Dropped
+        # from every macro and reported with bag locations so you can go vendor.
         trash, sellable = [], []
         for item in self.auction_items:
-            kind, plat = self._classify_price(item['price'])
-            if vendor_min > 0 and kind == 'plat' and plat < vendor_min:
-                trash.append(item)
-            else:
-                sellable.append(item)
+            (trash if self._is_vendor_trash(item) else sellable).append(item)
 
         if not sellable:
-            self._report_trash(trash, vendor_min)
+            self._report_trash(trash)
             messagebox.showinfo(
-                "All trash", "Every priced item is below the vendor floor — "
-                "nothing to auction. Go vendor them!")
+                "All vendor trash", "Every priced item is worth more to a vendor "
+                "than to players — nothing to auction. Go vendor them!")
             return
 
         # Every sellable item needs a DB link for the link group — bail early
@@ -2358,7 +2495,7 @@ Pricing: tlp-auctions.com"""
                 clean = line.replace(DC2, '|')
                 self.output_text.insert('end', f"  L{i} ({len(line)}c): {clean}\n")
 
-        self._report_trash(trash, vendor_min)
+        self._report_trash(trash)
 
         if unpriced:
             messagebox.showinfo(
