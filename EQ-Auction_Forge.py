@@ -802,7 +802,7 @@ class AuctionBuilder:
         help_text = """EQ Auction Forge v1.4.0(beta)
 by wangel
 
-HOW TO USE:
+HOW TO USE (auction macros):
 
 1. In-game: /outputfile inventory
 2. Click "Load Inventory" and select the file
@@ -818,33 +818,54 @@ HOW TO USE:
    - Type a price, select item(s), click "Set Price"
      (applies to every selected row)
    - Or click "PC All" to auto-fetch prices from
-     TLP Auctions (uses median, not average)
-   - Set "Undercut %" to shave that % off every
-     price-checked median (e.g. 5 = 5% under)
+     TLP Auctions (median, not average)
+   - "Undercut %" shaves that % off the median and
+     rounds to the nearest 5p (e.g. 5 = 5% under)
    - "Price Check" under the items list checks the
      selected inventory item(s) without adding them
    - "Recent Postings" lists the last few sales of
-     one item, with time, for a quick reference
+     one item, with time
 5. Click "Generate" to build the macros
 6. Click "Write to INI" to save directly to your
-   character INI file (auto-backup created)
+   character INI (auto-backup created)
 7. Log into EQ — your macro buttons have clickable
    purple item links!
+
+LOG MONITOR (beta) — live trade radar:
+- Click "Log Monitor" to watch EC-tunnel auctions in
+  real time. It auto-finds your /log on file (or
+  Browse to it), then click Start.
+- SELL lead (green): someone WTBs an item you OWN.
+- BUY lead (cyan): someone WTSs an item on your
+  Watchlist. Bright = loud (beep + popup), muted =
+  quiet (shows in the feed only).
+- Click a row to copy "/tell <name>"; click the "+"
+  for the raw log line; right-click a spammer to
+  silence them.
+- "Aliases" maps slang to items (CoF, fbss, fungi…).
+- "Watchlist" = items you want to BUY; a keyword like
+  "Nathsar" catches the whole set.
+- Requires /log on in EQ. It only READS your log —
+  no automation, ToS-safe.
+
+VENDOR VALUE:
+- Type your character's CHA in the "CHA" box.
+- The "Vendor" columns estimate what an NPC merchant
+  pays for each item. Blank = it can't be vendored.
+- After PC All, items worth more to a vendor than to
+  players turn ORANGE and are left OUT of your macro
+  (go vendor those instead).
 
 TIPS:
 - Uncheck "Inv only" to search ALL 133k+ items
   (useful for WTB macros)
-- Check "Bags only" to hide equipped/bank gear and
-  show just what's sitting in your inventory bags
-- Click any column header to sort. Sort the item
-  list by Location to grab a whole bag at once; sort
-  the auction list by Price (after PC All) to find
-  and delete the cheap stuff. Click again to reverse.
-- Items auto-pack 2+ per line when they fit under
-  the 255 character limit
+- Check "Bags only" to hide equipped/bank gear
+- Click any column header to sort (Location to grab a
+  whole bag; Price or Vendor after PC All). Click
+  again to reverse.
+- Items auto-pack 2+ per line under the 255-char limit
 - Each macro button supports up to 5 lines
 - Save/Load preserves your auction list as JSON
-- Price Check uses median pricing for accuracy
 
 IMPORTANT:
 - EQ must be CLOSED when writing to the INI file
