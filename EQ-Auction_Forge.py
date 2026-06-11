@@ -351,26 +351,22 @@ def format_posting_price(plat, krono):
 
 # --- NPC vendor value -------------------------------------------------------
 # What an NPC merchant pays you for an item = base_value x M(CHA), where M is
-# CHARACTER-WIDE (item-independent; the item's 'sellrate' does NOT affect buyback
-# on Live). Calibrated from measured Frostreaver (EQ Live TLP) home-vendor
-# buyback of one item — NOT the EQEmu ±4% rules, which don't govern Daybreak
-# servers. Piecewise-linear through the measured points, clamped at the high-CHA
-# ceiling (~1/1.05). Re-measure & extend _VENDOR_CHA_POINTS if it drifts.
-_VENDOR_CHA_POINTS = [(65, 0.844), (80, 0.904), (130, 0.952)]
+# CHARACTER-WIDE (item-independent; 'sellrate' does NOT affect buyback on Live).
+# Calibrated from measured Frostreaver (EQ Live TLP) home-vendor buyback — NOT
+# the EQEmu rule constants (those don't govern Daybreak). Measured: M rises a
+# flat ~0.4%/CHA and HARD-CAPS at 1/1.05 (~95.24%, the merchant markup
+# reciprocal), reached around CHA ~92 — beyond that more CHA does nothing
+# (verified: CHA 95 and 130 give the identical payout). Two non-capped points
+# (65->0.844, 80->0.904) set the line. Re-measure if it drifts / for other factions.
+_VENDOR_SLOPE = 0.004           # M gained per CHA point
+_VENDOR_INTERCEPT = 0.584       # M = SLOPE*CHA + INTERCEPT, below the cap
+_VENDOR_CAP = 1.0 / 1.05        # ~0.95238 ceiling, reached ~CHA 92
 
 
 def vendor_multiplier(cha):
-    """Fraction of an item's base value an NPC pays you, at the given CHA."""
-    pts = _VENDOR_CHA_POINTS
-    if cha >= pts[-1][0]:
-        return pts[-1][1]
-    if cha <= pts[0][0]:
-        (x0, y0), (x1, y1) = pts[0], pts[1]          # extrapolate down, floored
-        return max(0.0, y0 + (y1 - y0) * (cha - x0) / (x1 - x0))
-    for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
-        if x0 <= cha <= x1:
-            return y0 + (y1 - y0) * (cha - x0) / (x1 - x0)
-    return pts[-1][1]
+    """Fraction of an item's base value an NPC pays you at the given CHA — a flat
+    line that hard-caps at _VENDOR_CAP (so high CHA past ~92 gains nothing)."""
+    return max(0.0, min(_VENDOR_SLOPE * cha + _VENDOR_INTERCEPT, _VENDOR_CAP))
 
 
 def vendor_value_pp(price_cp, cha):
