@@ -7,7 +7,7 @@
 #   - Price check via TLP Auctions API (Frostreaver)
 #   - Auto-packs items across lines (max 255 chars/line, 5 lines/button)
 #   - Load inventory to filter to items you own
-#
+
 # Requirements: None (stdlib only)
 
 import os
@@ -24,7 +24,7 @@ import tkinter as tk
 from datetime import datetime, timezone
 from tkinter import ttk, filedialog, messagebox, scrolledtext
 from urllib.request import urlopen, Request
-from urllib.parse import urlencode
+from urllib.parse import urlencode, quote
 
 import ssl
 
@@ -216,7 +216,9 @@ def load_item_database(gz_path):
 # sold in EC tunnel. Matched by exact (case-insensitive) name so we don't nuke
 # named gear that happens to share a word (e.g. "Dagger" the newbie item vs.
 # "Ceremonial Dagger"). Add more here as you spot them.
-EXCLUDED_ITEMS = frozenset(n.lower() for n in (
+# Built-in worthless newbie/starter junk, always dropped from inventory loads.
+# The user can layer their own names on top via Settings (see EXCLUDED_ITEMS).
+_DEFAULT_EXCLUDED = frozenset(n.lower() for n in (
     "Backpack",
     "Small Box",
     "Dagger",
@@ -226,6 +228,10 @@ EXCLUDED_ITEMS = frozenset(n.lower() for n in (
     "Ethereal Dreamweave Satchel",
     "Dreamweave Satchel",
 ))
+
+# Effective filter set = built-ins + the user's Settings additions. Rebuilt from
+# settings at startup and whenever the user edits the list (apply_runtime_settings).
+EXCLUDED_ITEMS = set(_DEFAULT_EXCLUDED)
 
 
 def load_inventory(filepath):
@@ -294,7 +300,87 @@ def make_link(itemlink, item_name):
 BULK_PRICE_LIMIT = 10  # API accepts up to 10 item ids per bulk request
 DEFAULT_KRONO_RATE = 4000  # fallback for kr display when the API reports 0
 
-APP_VERSION = "1.4.0(beta)"
+
+# ---- User settings (settings.json in the cache dir) -----------------------
+# A small global config the user can tune from the Settings dialog: the krono
+# fallback rate, the default values the macro-builder boxes start with, and
+# extra inventory-filter names layered onto the built-in _DEFAULT_EXCLUDED set.
+# Lives next to aliases.json/watchlist.json so all user data is in one place.
+DEFAULT_SETTINGS = {
+    'krono_rate': 4000,
+    'krono_synced_at': None,  # epoch secs of the last successful live krono sync
+    'defaults': {
+        'prefix': '/auc WTS',
+        'page': '2',
+        'suffix': '',
+        'threshold': '600p',
+        'undercut': '0',
+        'cha': '75',
+    },
+    'excluded': [],   # user-added filter names (built-ins always apply too)
+}
+
+
+def _settings_path():
+    return os.path.join(_cache_dir(), 'settings.json')
+
+
+def load_settings():
+    """Read settings.json, overlaying it on DEFAULT_SETTINGS so a partial or
+    missing/corrupt file still yields a complete, well-typed settings dict."""
+    s = {
+        'krono_rate': DEFAULT_SETTINGS['krono_rate'],
+        'krono_synced_at': None,
+        'defaults': dict(DEFAULT_SETTINGS['defaults']),
+        'excluded': [],
+    }
+    try:
+        with open(_settings_path(), 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return s
+    if not isinstance(data, dict):
+        return s
+    try:
+        rate = int(data.get('krono_rate'))
+        if rate > 0:
+            s['krono_rate'] = rate
+    except (TypeError, ValueError):
+        pass
+    try:
+        ts = float(data.get('krono_synced_at'))
+        if ts > 0:
+            s['krono_synced_at'] = ts
+    except (TypeError, ValueError):
+        pass
+    if isinstance(data.get('defaults'), dict):
+        for k in s['defaults']:
+            if data['defaults'].get(k) is not None:
+                s['defaults'][k] = str(data['defaults'][k])
+    if isinstance(data.get('excluded'), list):
+        s['excluded'] = sorted({str(x).strip() for x in data['excluded'] if str(x).strip()},
+                               key=str.lower)
+    return s
+
+
+def save_settings(settings):
+    """Persist the settings dict to settings.json."""
+    with open(_settings_path(), 'w', encoding='utf-8') as f:
+        json.dump(settings, f, indent=2, sort_keys=True)
+
+
+def apply_runtime_settings(settings):
+    """Push settings into the module globals the rest of the code reads: the
+    krono fallback rate and the effective EXCLUDED_ITEMS set (built-ins + the
+    user's additions). Called at startup and after the Settings dialog saves."""
+    global DEFAULT_KRONO_RATE, EXCLUDED_ITEMS
+    DEFAULT_KRONO_RATE = settings.get('krono_rate') or 4000
+    user_ex = {str(n).strip().lower()
+               for n in settings.get('excluded', ()) if str(n).strip()}
+    EXCLUDED_ITEMS = set(_DEFAULT_EXCLUDED) | user_ex
+
+
+APP_VERSION = "1.4.2(beta)"
 
 # Identify ourselves to the TLP Auctions API. Their operator asked tool authors
 # to send a custom User-Agent so legit tool traffic isn't mistaken for spam and
@@ -310,6 +396,9 @@ _API_HEADERS = {
 # Startup update check against GitHub releases.
 RELEASES_API = "https://api.github.com/repos/wangel/EQ_Auction_Forge/releases/latest"
 RELEASES_URL = "https://github.com/wangel/EQ_Auction_Forge/releases"
+# Feedback / bug reports — opens a pre-filled new GitHub issue.
+ISSUES_URL = ("https://github.com/wangel/EQ_Auction_Forge/issues/new"
+              f"?labels=feedback&title=%5Bv{APP_VERSION}%5D+")
 
 
 def _version_tuple(v):
@@ -362,6 +451,10 @@ def fetch_prices_bulk(item_ids, server=SERVER):
 
 
 RECENT_SALES_LIMIT = 8  # postings shown by the "Recent Postings" reference lookup
+# Only items whose bulk median is at/above this get a recent-asks lookup during a
+# price check (krono auto-resolve + plat divergence flag). Bounds the extra per-item
+# calls to the high-value items where mispricing actually costs plat.
+RECENT_CHECK_FLOOR = 1000
 
 
 def fetch_recent_sales(item_name, server=SERVER, limit=RECENT_SALES_LIMIT):
@@ -382,6 +475,27 @@ def fetch_recent_sales(item_name, server=SERVER, limit=RECENT_SALES_LIMIT):
         return data.get('items', [])[:limit], None
     except Exception as e:
         return [], f"Error: {e}"
+
+
+def fetch_krono_rate(server=SERVER):
+    """Current krono->plat rate from tlp-auctions' windowed krono feed, using the
+    **1-day** average. EC krono moves fast — the flat `/krono-prices/{server}`
+    endpoint and the 7-day window both lag (observed ~2k under the 1-day), so we
+    take the tightest window with samples. Returns an int plat-per-krono, or None
+    on failure (caller keeps its existing fallback rate)."""
+    try:
+        url = f"{API_BASE}/api/krono-prices/{quote(server)}/windows"
+        req = Request(url, headers=_API_HEADERS, method='GET')
+        with urlopen(req, timeout=10, context=_ssl_ctx) as r:
+            data = json.loads(r.read().decode())
+        by_days = {w.get('days'): w for w in data.get('windows', [])}
+        for d in (1, 2, 3, 7):  # prefer the freshest window that actually has data
+            w = by_days.get(d)
+            if w and w.get('sampleSize', 0) > 0 and w.get('averagePrice', 0) > 0:
+                return int(round(w['averagePrice']))
+        return None
+    except Exception:
+        return None
 
 
 def format_sale_age(iso_str):
@@ -414,6 +528,9 @@ def format_posting_price(plat, krono):
 
 # --- NPC vendor value -------------------------------------------------------
 # What an NPC merchant pays you for an item = base_value x M(CHA), where M is
+# I"m pretty sure this is pretty accurate --- I ended up looking at the code in
+# eqemu to get a general idea.
+#
 # CHARACTER-WIDE (item-independent; 'sellrate' does NOT affect buyback on Live).
 # Calibrated from measured Frostreaver (EQ Live TLP) home-vendor buyback — NOT
 # the EQEmu rule constants (those don't govern Daybreak). Measured: M rises a
@@ -443,6 +560,7 @@ class AuctionBuilder:
         self.item_db = {}
         self.item_ids = {}
         self.item_prices = {}  # name -> base value in copper (for vendor estimate)
+        self._last_median = {}  # name -> last bulk-API median (plat), for the recent-asks hint
         self.inventory = []
         self.inv_by_name = {}  # name -> inventory entry, for count/location lookups
         self.auction_items = []  # list of {'name', 'price', 'count'}
@@ -460,9 +578,22 @@ class AuctionBuilder:
         self._watchlist = None     # lazily loaded from watchlist.json (items I want)
         self._watch_win = None     # the watchlist editor Toplevel
         self._silenced = None      # lazily loaded set of items muted from dinging
+        self._settings_win = None  # the Settings dialog Toplevel
+
+        # User settings (krono rate, box defaults, extra filter names). Loaded
+        # before the UI so the toolbar boxes seed from the saved defaults, and
+        # applied so the module globals (DEFAULT_KRONO_RATE / EXCLUDED_ITEMS) match.
+        self.settings = load_settings()
+        apply_runtime_settings(self.settings)
+        # Effective krono rate: starts at the settings fallback, replaced by the
+        # live tlp-auctions 1-day avg once _refresh_krono_rate lands (see __init__).
+        self.krono_rate = self.settings['krono_rate']
+        # Epoch secs of the last successful live krono sync (persisted across runs);
+        # drives the "krono synced @ …" notes in the top bar and Settings.
+        self.krono_synced_at = self.settings.get('krono_synced_at')
 
         self.root = tk.Tk()
-        self.root.title("EQ Auction Forge v1.4.0(beta) — by wangel")
+        self.root.title("EQ Auction Forge v1.4.2(beta) — by wangel")
         self.root.configure(bg='#1a1a1a')
         # Open wide enough for the right-side price controls + columns, centered,
         # with a sane minimum so it can't be squished into uselessness. Resizes
@@ -471,6 +602,7 @@ class AuctionBuilder:
         self._build_ui()
         self.root.after(100, self._load_db)
         self.root.after(800, self._check_update)
+        self.root.after(900, self._refresh_krono_rate)
 
     def _center_window(self, w, h, min_w=None, min_h=None):
         """Open at w×h centered on screen — clamped to fit smaller screens — and
@@ -517,9 +649,24 @@ class AuctionBuilder:
         ttk.Combobox(top, textvariable=self.server_var, values=SERVERS,
                      width=13).pack(side='left')
 
+        # Krono-rate note: shows the live rate + when it last synced from TLP
+        # Auctions. Seeded from the persisted timestamp; updated by every sync.
+        self.krono_status_var = tk.StringVar(value="")
+        ttk.Label(top, textvariable=self.krono_status_var,
+                  foreground='#888888').pack(side='left', padx=12)
+        self._update_krono_label()  # seed from persisted rate/timestamp
+
         self.db_count_var = tk.StringVar()
         ttk.Label(top, textvariable=self.db_count_var, foreground='#00ff00').pack(side='right')
         ttk.Button(top, text="Help", command=self._show_help).pack(side='right', padx=5)
+        ttk.Button(top, text="Settings", command=self._open_settings).pack(side='right', padx=5)
+
+        # Feedback nudge — opens a pre-filled GitHub issue (version baked into title).
+        feedback_lbl = ttk.Label(top, text="Feedback / report a bug",
+                                 foreground='#5fafff',
+                                 font=('Consolas', 9, 'underline'), cursor='hand2')
+        feedback_lbl.pack(side='right', padx=5)
+        feedback_lbl.bind('<Button-1>', lambda e: webbrowser.open(ISSUES_URL))
 
         # Update nudge — stays blank/invisible unless a newer release exists.
         # Click it to open the releases page.
@@ -565,7 +712,7 @@ class AuctionBuilder:
         # 75 (Human baseline; base-race CHA averages ~60 but real leveled/buffed
         # toons run higher) — editable per character.
         ttk.Label(ff, text="CHA:").pack(side='left', padx=(10, 2))
-        self.cha_var = tk.StringVar(value="75")
+        self.cha_var = tk.StringVar(value=self.settings['defaults']['cha'])
         ttk.Entry(ff, textvariable=self.cha_var, width=5).pack(side='left')
         self.cha_var.trace_add('write', self._on_cha_change)
 
@@ -649,6 +796,8 @@ class AuctionBuilder:
         self.auc_tree.column('vendor', width=60, anchor='e')
         # Orange = worth more to a vendor than to players (auto-excluded from macros).
         self.auc_tree.tag_configure('VENDOR', foreground='#ff9900')
+        self.auc_tree.tag_configure('KRONO', foreground='#cc99ff')  # krono-priced row
+        self.auc_tree.tag_configure('DIVERGE', foreground='#ffd24d')  # recent asks << your price
         auc_sb = ttk.Scrollbar(auc_frame, orient='vertical', command=self.auc_tree.yview)
         self.auc_tree.configure(yscrollcommand=auc_sb.set)
         self.auc_tree.pack(side='left', fill='both', expand=True)
@@ -657,6 +806,17 @@ class AuctionBuilder:
         self.auc_tree.bind('<Delete>', self._remove_from_auction)
         self.auc_tree.bind('<<TreeviewSelect>>', self._on_auction_select)
         self._bind_select_all(self.auc_tree)
+
+        # Color key — each word painted in its row-tag color so the meaning is
+        # self-evident. The amber entry steers to Recent Postings (the action).
+        legend = ttk.Frame(right)
+        legend.pack(fill='x', pady=(2, 0))
+        ttk.Label(legend, text="Colors:", foreground='#888888',
+                  font=('Consolas', 8)).pack(side='left')
+        for txt, color in (("krono", '#cc99ff'), ("vendor it", '#ff9900'),
+                           ("recent asks lower → check Recent Postings", '#ffd24d')):
+            ttk.Label(legend, text=txt, foreground=color,
+                      font=('Consolas', 8)).pack(side='left', padx=(6, 0))
 
         # Price controls (always visible — core flow for price-only users)
         pf = ttk.Frame(right)
@@ -670,7 +830,7 @@ class AuctionBuilder:
         # Undercut: shave this % off every price-checked median before it's set,
         # so your prices land just under the going rate. 0 = use the median as-is.
         ttk.Label(pf, text="Undercut:").pack(side='left', padx=(12, 2))
-        self.undercut_var = tk.StringVar(value="0")
+        self.undercut_var = tk.StringVar(value=self.settings['defaults']['undercut'])
         ttk.Entry(pf, textvariable=self.undercut_var, width=4).pack(side='left')
         ttk.Label(pf, text="%").pack(side='left')
 
@@ -695,13 +855,13 @@ class AuctionBuilder:
         sf = ttk.Frame(self.macro_panel)
         sf.pack(fill='x', pady=3)
         ttk.Label(sf, text="Prefix:").pack(side='left')
-        self.prefix_var = tk.StringVar(value="/auc WTS")
+        self.prefix_var = tk.StringVar(value=self.settings['defaults']['prefix'])
         ttk.Entry(sf, textvariable=self.prefix_var, width=12).pack(side='left', padx=5)
         ttk.Label(sf, text="Page:").pack(side='left', padx=(10, 0))
-        self.page_var = tk.StringVar(value="2")
+        self.page_var = tk.StringVar(value=self.settings['defaults']['page'])
         ttk.Entry(sf, textvariable=self.page_var, width=3).pack(side='left', padx=5)
         ttk.Label(sf, text="Suffix:").pack(side='left', padx=(10, 0))
-        self.suffix_var = tk.StringVar(value="")
+        self.suffix_var = tk.StringVar(value=self.settings['defaults']['suffix'])
         ttk.Entry(sf, textvariable=self.suffix_var, width=8).pack(side='left', padx=(5, 2))
         ttk.Button(sf, text="?", width=2, command=self._suffix_help).pack(side='left')
 
@@ -712,7 +872,7 @@ class AuctionBuilder:
         tf = ttk.Frame(self.macro_panel)
         tf.pack(fill='x', pady=3)
         ttk.Label(tf, text="Link if ≥:").pack(side='left')
-        self.threshold_var = tk.StringVar(value="600p")
+        self.threshold_var = tk.StringVar(value=self.settings['defaults']['threshold'])
         ttk.Entry(tf, textvariable=self.threshold_var, width=6).pack(side='left', padx=(5, 8))
         ttk.Label(tf, text="≥ link · below = text · items worth more to a vendor "
                            "are auto-excluded (price-check first)",
@@ -799,7 +959,7 @@ class AuctionBuilder:
             font=('Consolas', 9), wrap='word', padx=10, pady=10)
         txt.pack(fill='both', expand=True, padx=10, pady=10)
 
-        help_text = """EQ Auction Forge v1.4.0(beta)
+        help_text = """EQ Auction Forge v1.4.2(beta)
 by wangel
 
 HOW TO USE (auction macros):
@@ -818,13 +978,27 @@ HOW TO USE (auction macros):
    - Type a price, select item(s), click "Set Price"
      (applies to every selected row)
    - Or click "PC All" to auto-fetch prices from
-     TLP Auctions (median, not average)
+     TLP Auctions (median, not average). Items that
+     actually trade in krono are auto-detected and
+     priced in krono (e.g. "1.5kr"), shown purple.
+     Pricier items whose recent asks are running well
+     under their median get flagged amber — open Recent
+     Postings to reprice the ones that really moved
    - "Undercut %" shaves that % off the median and
      rounds to the nearest 5p (e.g. 5 = 5% under)
    - "Price Check" under the items list checks the
      selected inventory item(s) without adding them
    - "Recent Postings" lists the last few sales of
-     one item, with time
+     one item, with time. It also medians the recent
+     WTS asks and warns (📉) if they're running well
+     under your price-check median — a sign the median
+     is lagging and you'd be overpriced. A button there
+     prices the item at that recent median (no undercut
+     — match the market, don't undercut it). Krono-priced
+     items read in krono (e.g. "1kr"), folded at the live
+     rate
+   - Krono rate is pulled live from TLP Auctions (1-day
+     avg) at startup; set a fallback in Settings
 5. Click "Generate" to build the macros
 6. Click "Write to INI" to save directly to your
    character INI (auto-backup created)
@@ -1123,6 +1297,227 @@ Pricing: tlp-auctions.com"""
             menu.tk_popup(event.x_root, event.y_root)
         finally:
             menu.grab_release()
+
+    # ----- Settings dialog ----------------------------------------------------
+    def _open_settings(self):
+        """Tune the global knobs: krono fallback rate, the default values the
+        macro-builder boxes start with, and extra inventory-filter names. Saved
+        to settings.json and applied immediately."""
+        if self._settings_win is not None and self._settings_win.winfo_exists():
+            self._settings_win.lift()
+            return
+        win = tk.Toplevel(self.root)
+        self._settings_win = win
+        win.title("Settings")
+        win.configure(bg='#1a1a1a')
+        win.geometry("620x700")
+        win.minsize(620, 600)
+        win.protocol("WM_DELETE_WINDOW", self._close_settings)
+
+        d = self.settings['defaults']
+        self._set_krono_var = tk.StringVar(value=str(self.settings['krono_rate']))
+        # Local edit vars, seeded from the stored settings (not the live boxes).
+        self._set_vars = {
+            'threshold': tk.StringVar(value=d['threshold']),
+            'undercut': tk.StringVar(value=d['undercut']),
+            'page': tk.StringVar(value=d['page']),
+            'prefix': tk.StringVar(value=d['prefix']),
+            'suffix': tk.StringVar(value=d['suffix']),
+            'cha': tk.StringVar(value=d['cha']),
+        }
+
+        pad = {'padx': 10}
+        ttk.Label(win, text="Saved values seed the boxes for new sessions and apply "
+                            "to the current ones now.", foreground='#888888').pack(
+            anchor='w', pady=(10, 4), **pad)
+
+        grid = ttk.Frame(win)
+        grid.pack(fill='x', **pad)
+        rows = [
+            ("Krono rate (plat):", self._set_krono_var,
+             "Auto-pulled from TLP Auctions at startup. Hit Sync to refresh it now — "
+             "that saves it instantly as your offline fallback (no need to Save). "
+             "Used when offline, and to convert 'kr' in the boxes."),
+            ("Default link threshold:", self._set_vars['threshold'],
+             "Items priced ≥ this go out as clickable links; cheaper = compact text."),
+            ("Default undercut %:", self._set_vars['undercut'],
+             "Trims price-check results before posting (rounded to 5p)."),
+            ("Default macro page:", self._set_vars['page'],
+             "First action-bar page written to (page 1 is never touched)."),
+            ("Default prefix:", self._set_vars['prefix'], "Leading text on each WTS line."),
+            ("Default suffix:", self._set_vars['suffix'], "Trailing text on each WTS line."),
+            ("Default Charisma:", self._set_vars['cha'],
+             "Drives the NPC vendor-value estimate."),
+        ]
+        for i, (label, var, hint) in enumerate(rows):
+            ttk.Label(grid, text=label).grid(row=i * 2, column=0, sticky='w', pady=(6, 0))
+            ttk.Entry(grid, textvariable=var, width=12).grid(
+                row=i * 2, column=1, sticky='w', padx=8, pady=(6, 0))
+            hint_lbl = ttk.Label(grid, text=hint, foreground='#666666',
+                                 font=('Consolas', 8), wraplength=560, justify='left')
+            hint_lbl.grid(row=i * 2 + 1, column=0, columnspan=3, sticky='w')
+            if var is self._set_krono_var:
+                self._set_krono_sync = ttk.Button(
+                    grid, text="⟳ Sync", width=8,
+                    command=self._settings_sync_krono)
+                self._set_krono_sync.grid(row=i * 2, column=2, sticky='w', pady=(6, 0))
+                self._set_krono_hint = hint_lbl
+                self._set_krono_hint_base = hint
+                self._refresh_krono_hint()  # append "Last synced …" if we have it
+
+        ttk.Label(win, text="Inventory filter — names dropped on load. Built-ins are "
+                            "always on; add your own junk below.",
+                  foreground='#888888').pack(anchor='w', pady=(14, 4), **pad)
+
+        # Pack the bottom bars FIRST (side='bottom') so they reserve their height
+        # before the excluded-items tree expands into whatever's left — otherwise
+        # the tree eats the cavity and the Save/Cancel row gets clipped to nothing.
+        bot = ttk.Frame(win)
+        bot.pack(side='bottom', fill='x', pady=10, **pad)
+        ttk.Button(bot, text="Save", command=self._settings_save).pack(side='left')
+        ttk.Button(bot, text="Cancel", command=self._close_settings).pack(side='left', padx=6)
+        self._set_status_var = tk.StringVar(value="")
+        ttk.Label(bot, textvariable=self._set_status_var,
+                  foreground='#ff9900').pack(side='left', padx=10)
+
+        addf = ttk.Frame(win)
+        addf.pack(side='bottom', fill='x', pady=4, **pad)
+        ttk.Label(addf, text="Add:").pack(side='left')
+        self._excl_add_var = tk.StringVar()
+        ent = ttk.Entry(addf, textvariable=self._excl_add_var)
+        ent.pack(side='left', fill='x', expand=True, padx=4)
+        ent.bind('<Return>', lambda e: self._excl_add())
+        ttk.Button(addf, text="Add", command=self._excl_add).pack(side='left')
+        ttk.Button(addf, text="Remove (yours only)",
+                   command=self._excl_remove).pack(side='left', padx=4)
+
+        efr = ttk.Frame(win)
+        efr.pack(fill='both', expand=True, **pad)
+        self._excl_tree = ttk.Treeview(efr, columns=('name', 'src'), show='headings',
+                                       selectmode='browse', height=6)
+        self._excl_tree.heading('name', text='Item name')
+        self._excl_tree.heading('src', text='Source')
+        self._excl_tree.column('name', width=380)
+        self._excl_tree.column('src', width=90)
+        self._excl_tree.tag_configure('custom', foreground='#00ff66')
+        self._excl_tree.tag_configure('builtin', foreground='#888888')
+        esb = ttk.Scrollbar(efr, orient='vertical', command=self._excl_tree.yview)
+        self._excl_tree.configure(yscrollcommand=esb.set)
+        self._excl_tree.pack(side='left', fill='both', expand=True)
+        esb.pack(side='right', fill='y')
+        self._excl_custom = list(self.settings['excluded'])  # working copy
+        self._refresh_excl_tree()
+
+    def _close_settings(self):
+        if self._settings_win is not None:
+            self._settings_win.destroy()
+        self._settings_win = None
+
+    def _refresh_excl_tree(self):
+        self._excl_tree.delete(*self._excl_tree.get_children())
+        for n in sorted(_DEFAULT_EXCLUDED):
+            self._excl_tree.insert('', 'end', values=(n, 'built-in'), tags=('builtin',))
+        for n in sorted(self._excl_custom, key=str.lower):
+            self._excl_tree.insert('', 'end', values=(n, 'custom'), tags=('custom',))
+
+    def _excl_add(self):
+        name = self._excl_add_var.get().strip()
+        if not name:
+            return
+        low = name.lower()
+        if low in _DEFAULT_EXCLUDED or low in {c.lower() for c in self._excl_custom}:
+            self._set_status_var.set(f'"{name}" is already filtered')
+            return
+        self._excl_custom.append(name)
+        self._excl_add_var.set("")
+        self._set_status_var.set("")
+        self._refresh_excl_tree()
+
+    def _excl_remove(self):
+        sel = self._excl_tree.selection()
+        if not sel:
+            return
+        vals = self._excl_tree.item(sel[0])['values']
+        if not vals or vals[1] != 'custom':
+            self._set_status_var.set("Built-in filters can't be removed")
+            return
+        name = str(vals[0]).lower()
+        self._excl_custom = [c for c in self._excl_custom if c.lower() != name]
+        self._refresh_excl_tree()
+
+    def _settings_sync_krono(self):
+        """Pull the live 1-day krono rate from TLP Auctions and drop it into the
+        box. Runs threaded so the dialog doesn't freeze; best-effort."""
+        self._set_krono_sync.configure(state='disabled')
+        self._set_status_var.set("Syncing krono rate…")
+
+        def work():
+            rate = fetch_krono_rate(_config["server"])
+            self.root.after(0, lambda: self._settings_sync_krono_done(rate))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _settings_sync_krono_done(self, rate):
+        # The dialog may have been closed while the fetch was in flight.
+        if self._settings_win is None:
+            return
+        self._set_krono_sync.configure(state='normal')
+        if not rate:
+            self._set_status_var.set("Sync failed — TLP Auctions unreachable")
+            return
+        self._set_krono_var.set(str(rate))
+        # Apply live + auto-persist the rate and its sync time as the offline
+        # fallback (without committing the dialog's other, still-editable fields).
+        self._apply_krono_rate(rate)
+        self._set_status_var.set(f"Synced & saved: {rate}p/kr")
+        self._refresh_krono_hint()
+
+    def _refresh_krono_hint(self):
+        """Append the last-synced timestamp to the krono hint in the Settings
+        dialog (called when the dialog opens and after a manual Sync)."""
+        if not getattr(self, '_set_krono_hint', None):
+            return
+        txt = self._set_krono_hint_base
+        synced = self._fmt_synced(self.krono_synced_at)
+        if synced:
+            txt += f"  ·  Last synced {synced}."
+        self._set_krono_hint.configure(text=txt)
+
+    def _settings_save(self):
+        try:
+            rate = int(float(self._set_krono_var.get().strip().replace(',', '')))
+            if rate <= 0:
+                raise ValueError
+        except ValueError:
+            self._set_status_var.set("Krono rate must be a positive number")
+            return
+        new = {
+            'krono_rate': rate,
+            # Preserve the last live-sync timestamp; a manual Save isn't a sync.
+            'krono_synced_at': self.settings.get('krono_synced_at'),
+            'defaults': {k: v.get() for k, v in self._set_vars.items()},
+            'excluded': sorted({c.strip() for c in self._excl_custom if c.strip()},
+                               key=str.lower),
+        }
+        try:
+            save_settings(new)
+        except OSError as e:
+            self._set_status_var.set(f"Save failed: {e}")
+            return
+        self.settings = new
+        apply_runtime_settings(new)
+        self.krono_rate = rate
+        self._update_krono_label()  # reflect a hand-edited rate in the top-bar note
+        # Push the saved defaults into the live boxes so they take effect now.
+        dd = new['defaults']
+        self.threshold_var.set(dd['threshold'])
+        self.undercut_var.set(dd['undercut'])
+        self.page_var.set(dd['page'])
+        self.prefix_var.set(dd['prefix'])
+        self.suffix_var.set(dd['suffix'])
+        self.cha_var.set(dd['cha'])
+        self._log("Settings saved. Filter changes apply on the next inventory load.")
+        self._close_settings()
 
     # ----- Alias editor -------------------------------------------------------
     def _open_alias_editor(self):
@@ -1587,11 +1982,11 @@ Pricing: tlp-auctions.com"""
         s = (v or '').strip().lower()
         if not s:
             return -1.0
-        kr = re.search(r'(\d+)\s*kr', s)
-        pp = re.search(r'(\d+)\s*p', s)
+        kr = re.search(r'(\d+(?:\.\d+)?)\s*kr', s)
+        pp = re.search(r'(\d+(?:\.\d+)?)\s*p', s)
         if kr or pp:
-            plat = (int(kr.group(1)) * DEFAULT_KRONO_RATE if kr else 0)
-            plat += int(pp.group(1)) if pp else 0
+            plat = (float(kr.group(1)) * DEFAULT_KRONO_RATE if kr else 0.0)
+            plat += float(pp.group(1)) if pp else 0.0
             return float(plat)
         digits = re.sub(r'[^\d.]', '', s)
         try:
@@ -1621,11 +2016,26 @@ Pricing: tlp-auctions.com"""
                 tree.move(iid, '', pos)
         self._sort_state[state_key] = not descending
 
+    def _row_tag(self, item):
+        """Color tag for an auction row, priority krono > vendor-trash > diverge.
+        Single source of truth so every rebuild (insert, sort, re-flag) colors
+        rows the same way."""
+        kind, _ = self._classify_price(item.get('price', ''))
+        if kind == 'krono':
+            return ('KRONO',)
+        if self._is_vendor_trash(item):
+            return ('VENDOR',)
+        if item.get('diverge'):
+            return ('DIVERGE',)
+        return ()
+
     def _refresh_auction_tree(self):
-        """Rebuild every auction row from self.auction_items (in list order)."""
+        """Rebuild every auction row from self.auction_items (in list order),
+        carrying the color tags so a sort/rebuild doesn't drop the flagging."""
         self.auc_tree.delete(*self.auc_tree.get_children())
         for item in self.auction_items:
-            self.auc_tree.insert('', 'end', values=self._auc_values(item))
+            self.auc_tree.insert('', 'end', values=self._auc_values(item),
+                                 tags=self._row_tag(item))
 
     def _bind_select_all(self, tree):
         """Wire Ctrl+A on a tree to select every row (explorer-style). Returns
@@ -1698,14 +2108,28 @@ Pricing: tlp-auctions.com"""
                 self.auction_items.pop(idx)
 
     def _on_auction_select(self, event):
-        """Show the selected item's current price in the price field."""
+        """Show the selected item's current price in the price field, and mirror
+        the selection in the inventory list so Recent Postings / left-side Price
+        Check act on the same item (those prefer the inventory selection)."""
         sel = self.auc_tree.selection()
         if not sel:
             return
         idx = self.auc_tree.index(sel[0])
         if idx < len(self.auction_items):
-            current_price = self.auction_items[idx].get('price', '')
-            self.price_var.set(current_price)
+            self.price_var.set(self.auction_items[idx].get('price', ''))
+            self._select_inventory_by_name(self.auction_items[idx]['name'])
+
+    def _select_inventory_by_name(self, name):
+        """Select the matching inventory row (and scroll it into view) if it's
+        currently visible; otherwise clear the inventory selection so single-item
+        lookups fall through to the auction selection instead of a stale one."""
+        for iid in self.item_tree.get_children():
+            vals = self.item_tree.item(iid)['values']
+            if vals and str(vals[0]) == name:
+                self.item_tree.selection_set(iid)
+                self.item_tree.see(iid)
+                return
+        self.item_tree.selection_remove(*self.item_tree.selection())
 
     def _set_price(self):
         """Set the price box value on every selected auction row."""
@@ -1717,8 +2141,28 @@ Pricing: tlp-auctions.com"""
             idx = self.auc_tree.index(iid)
             if idx < len(self.auction_items):
                 self.auction_items[idx]['price'] = price
+                self.auction_items[idx].pop('diverge', None)  # you've repriced it
                 self.auc_tree.item(iid, values=self._auc_values(self.auction_items[idx]))
         self._refresh_vendor_flags()  # re-color now that prices changed
+
+    def _use_recent_median(self, name, price):
+        """Set this item's auction price to the recent-median price string ('460p'
+        or '1.5kr'). No undercut is applied on purpose — the recent median already
+        reflects a competitive market, and undercutting it is the race-to-the-bottom
+        we want to avoid. Applies to matching auction rows; if the item isn't in the
+        list yet, the value loads into the price box so you can add it + Set Price."""
+        hits = [i for i, it in enumerate(self.auction_items) if it['name'] == name]
+        if hits:
+            for i in hits:
+                self.auction_items[i]['price'] = price
+                self.auction_items[i].pop('diverge', None)  # repriced to recent
+            self._refresh_auction_tree()
+            self._refresh_vendor_flags()
+            self._log(f"  {name}: priced at recent median {price}")
+        else:
+            self.price_var.set(price)
+            self._log(f"  {name}: recent median {price} -> price box "
+                      f"(not in auction list; add it, then Set Price)")
 
     def _undercut_pct(self):
         """Read the Undercut % box. Returns a float in [0, 100); 0 if blank or
@@ -1738,6 +2182,16 @@ Pricing: tlp-auctions.com"""
         numbers (300p - 2% = 294 -> 295, not a weird 294)."""
         return int(round(plat / 5.0)) * 5
 
+    @staticmethod
+    def _median(nums):
+        """Median of a list (None if empty). Stdlib-free to keep the no-deps rule."""
+        s = sorted(nums)
+        n = len(s)
+        if not n:
+            return None
+        mid = n // 2
+        return s[mid] if n % 2 else (s[mid - 1] + s[mid]) / 2.0
+
     def _result_to_price(self, name, res, krono_rate, undercut=0.0):
         """Turn a single bulk-API result into (price, detail) strings.
 
@@ -1749,11 +2203,76 @@ Pricing: tlp-auctions.com"""
             return None, "No price data"
         median = int(round(res.get('medianPlatPrice', 0)))
         samples = res.get('sampleSize', 0)
+        # Remember the raw median so Recent Postings can flag when live asks have
+        # drifted away from this longer-window check median.
+        self._last_median[name] = median
         if undercut:
             under = self._round_to_5(median * (1 - undercut / 100.0))
             detail = f"Median: {median}p ({samples} sales) -> -{undercut:g}% = {under}p"
             return f"{under}p", detail
         return f"{median}p", f"Median: {median}p ({samples} sales)"
+
+    def _recent_market(self, sales):
+        """Summarize recent WTS asks into a denomination-aware market read, or None
+        if <2 priced asks. Splits plat asks (platPrice>0) from pure-krono asks
+        (kronoPrice>0, no plat) and folds krono into effective plat at the live
+        rate. Returns {eff_med, n, is_krono, price_str} — price_str is the postable
+        string ('460p' or '1.5kr') in the item's dominant denomination."""
+        rate = DEFAULT_KRONO_RATE
+        wts = [s for s in sales if not s.get('transactionType')]
+        # EC combines currencies: "1kr 6000p" means 1 krono PLUS 6000 plat (~1.5kr
+        # total), NOT one-or-the-other — tlp-auctions records both components for
+        # exactly this reason. So each ask's effective plat is the SUM of its parts.
+        # A post that names any krono is krono-denominated (result shown in krono);
+        # plat-only otherwise.
+        eff, kr_count, plat_count = [], 0, 0
+        for s in wts:
+            p, k = s.get('platPrice') or 0, s.get('kronoPrice') or 0
+            if k > 0:
+                eff.append(p + k * rate)
+                kr_count += 1
+            elif p > 0:
+                eff.append(p)
+                plat_count += 1
+        n = len(eff)
+        eff_med = self._median(eff)
+        if eff_med is None or n < 2:
+            return None
+        is_krono = kr_count > plat_count
+        if is_krono:
+            kr = max(round((eff_med / rate) * 2) / 2, 0.5)  # nearest 0.5 krono
+            price_str = f"{kr:g}kr"
+        else:
+            price_str = f"{self._round_to_5(eff_med)}p"
+        return {'eff_med': eff_med, 'n': n, 'is_krono': is_krono, 'price_str': price_str}
+
+    def _resolve_price(self, name, res, krono_rate, undercut, server):
+        """`_result_to_price`, then a recent-asks reading for higher-value items
+        (bulk median >= RECENT_CHECK_FLOOR). Returns (price, detail, flag):
+          - krono-dominant -> repriced into krono (no undercut), flag=None
+          - plat asks running >=15% under the bulk median (>=3 asks) -> bulk price
+            kept but flag set (a dict) so the row is marked for review
+          - otherwise -> bulk price, flag=None
+        Runs in a worker thread; the extra call only fires above the floor."""
+        price, detail = self._result_to_price(name, res, krono_rate, undercut)
+        median = self._last_median.get(name, 0)
+        if not price or median < RECENT_CHECK_FLOOR:
+            return price, detail, None
+        sales, err = fetch_recent_sales(name, server)
+        if err:
+            return price, detail, None
+        mk = self._recent_market(sales)
+        if not mk:
+            return price, detail, None
+        if mk['is_krono']:
+            return (mk['price_str'],
+                    f"krono item -> {mk['price_str']} (recent median; "
+                    f"bulk was {median:,}p plat)", None)
+        pct = (mk['eff_med'] - median) / median * 100.0
+        if pct <= -15 and mk['n'] >= 3:
+            detail = f"{detail}  | recent asks ~{mk['price_str']} ({pct:.0f}%) — FLAGGED"
+            return price, detail, {'recent': mk['price_str'], 'pct': pct, 'n': mk['n']}
+        return price, detail, None
 
     def _price_check(self):
         """Price check the selected item via the bulk endpoint (single id)."""
@@ -1780,8 +2299,8 @@ Pricing: tlp-auctions.com"""
             if err:
                 self.root.after(0, lambda: self._on_price_result(name, None, err))
                 return
-            price, detail = self._result_to_price(
-                name, results.get(item_id), krono_rate, undercut)
+            price, detail, _flag = self._resolve_price(
+                name, results.get(item_id), krono_rate, undercut, _config["server"])
             self.root.after(0, lambda: self._on_price_result(name, price, detail))
 
         threading.Thread(target=do_check, daemon=True).start()
@@ -1815,10 +2334,10 @@ Pricing: tlp-auctions.com"""
                     self.root.after(0, lambda e=err: self._log(f"  {e}"))
                     continue
                 for idx, name, item_id in batch:
-                    price, detail = self._result_to_price(
-                        name, results.get(item_id), krono_rate, undercut)
-                    self.root.after(0, lambda n=name, p=price, d=detail, i=idx:
-                                    self._on_price_result_update(n, p, d, i))
+                    price, detail, flag = self._resolve_price(
+                        name, results.get(item_id), krono_rate, undercut, server)
+                    self.root.after(0, lambda n=name, p=price, d=detail, i=idx, f=flag:
+                                    self._on_price_result_update(n, p, d, i, f))
             self.root.after(0, self._pc_all_done)
 
         threading.Thread(target=do_all, daemon=True).start()
@@ -1828,6 +2347,17 @@ Pricing: tlp-auctions.com"""
         will sell to a vendor for more (and thus drop out of any macro)."""
         self._log("Price check complete!")
         flagged = self._refresh_vendor_flags()
+        # Recent-asks divergence: items priced well above what's actually being
+        # asked right now. We don't auto-reprice (could be a couple lowballers) —
+        # just surface them (amber rows) so you can eyeball + reprice the real ones.
+        diverged = [it for it in self.auction_items if it.get('diverge')]
+        if diverged:
+            self._log(f"{len(diverged)} item(s) priced above recent asks (amber) — "
+                      "open Recent Postings to reprice the real ones:")
+            for it in diverged:
+                fl = it['diverge']
+                self._log(f"    {it['name']}: you {it.get('price', '')} / "
+                          f"recent ~{fl['recent']} ({fl['pct']:.0f}%)")
         if not flagged:
             return
         lines = []
@@ -1845,18 +2375,19 @@ Pricing: tlp-auctions.com"""
             f"left OUT of any macro you generate:\n\n" + "\n".join(shown) + more)
 
     def _refresh_vendor_flags(self):
-        """Re-tag auction rows orange when worth more to a vendor than to players
-        (post-undercut). Returns the flagged items. Cheap; safe to call often."""
+        """Re-tag auction rows: purple when krono-priced, else orange when worth
+        more to a vendor than to players (post-undercut). Krono items are never
+        vendor-trash (can't compare), so the two tags never collide. Returns the
+        vendor-flagged items. Cheap; safe to call often."""
         flagged = []
         for idx, iid in enumerate(self.auc_tree.get_children()):
             if idx >= len(self.auction_items):
                 break
             item = self.auction_items[idx]
-            trash = self._is_vendor_trash(item)
+            tag = self._row_tag(item)
             # Re-render values too (refreshes the Vendor column on CHA change).
-            self.auc_tree.item(iid, values=self._auc_values(item),
-                               tags=('VENDOR',) if trash else ())
-            if trash:
+            self.auc_tree.item(iid, values=self._auc_values(item), tags=tag)
+            if tag == ('VENDOR',):
                 flagged.append(item)
         return flagged
 
@@ -1865,10 +2396,15 @@ Pricing: tlp-auctions.com"""
         if price:
             self.price_var.set(price)
 
-    def _on_price_result_update(self, name, price, detail, idx):
+    def _on_price_result_update(self, name, price, detail, idx, flag=None):
         self._log(f"  {name}: {detail}")
         if price and idx < len(self.auction_items):
             self.auction_items[idx]['price'] = price
+            # Stash/clear the recent-asks divergence flag for row tagging + report.
+            if flag:
+                self.auction_items[idx]['diverge'] = flag
+            else:
+                self.auction_items[idx].pop('diverge', None)
             # Update treeview
             children = self.auc_tree.get_children()
             if idx < len(children):
@@ -1906,8 +2442,8 @@ Pricing: tlp-auctions.com"""
                     self.root.after(0, lambda e=err: self._log(f"  {e}"))
                     continue
                 for name, item_id in batch:
-                    price, detail = self._result_to_price(
-                        name, results.get(item_id), krono_rate, undercut)
+                    price, detail, _flag = self._resolve_price(
+                        name, results.get(item_id), krono_rate, undercut, server)
                     # Single selection: also drop the price into the box so it's
                     # ready to use when adding the item.
                     setbox = price if len(targets) == 1 else None
@@ -1967,7 +2503,7 @@ Pricing: tlp-auctions.com"""
         win = tk.Toplevel(self.root)
         win.title(f"Recent Postings — {name}")
         win.configure(bg='#1a1a1a')
-        win.geometry("520x320")
+        win.geometry("520x390")
         win.attributes('-topmost', True)
 
         ttk.Label(win, text=name, foreground='#00ff00',
@@ -1975,6 +2511,50 @@ Pricing: tlp-auctions.com"""
         ttk.Label(win, text=f"Last {len(sales)} postings on {_config['server']} "
                             f"(newest first)", foreground='#888888').pack(
             anchor='w', padx=12, pady=(0, 4))
+
+        # Recent-asks divergence hint, kept at the BOTTOM (under the list). Close +
+        # hint are packed side='bottom' FIRST so the expanding list can't shove them
+        # off-screen at the default height.
+        ttk.Button(win, text="Close", command=win.destroy).pack(side='bottom', pady=(4, 10))
+
+        # Median the recent WTS asks (krono folded into plat at the live rate) and
+        # show it in the item's natural denomination. _recent_market is shared with
+        # the price-check krono auto-resolve, so the two always agree.
+        mk = self._recent_market(sales)
+        ref = self._last_median.get(name)
+        if mk:
+            eff_med, n, price_str = mk['eff_med'], mk['n'], mk['price_str']
+            if mk['is_krono']:
+                shown = f"{price_str} (≈{int(round(eff_med)):,}p @ {DEFAULT_KRONO_RATE:,}/kr)"
+            else:
+                shown = price_str
+            if not ref:
+                line = (f"Recent WTS median {shown} (over {n} asks) — "
+                        f"price-check to compare vs the live median.")
+                fg = '#cccccc'
+            else:
+                pct = (eff_med - ref) / ref * 100.0
+                if pct <= -15:
+                    line = (f"📉 Recent WTS median {shown} — ~{abs(pct):.0f}% UNDER your "
+                            f"{ref:,}p check median. Median's lagging; consider repricing.")
+                    fg = '#ff6666'
+                elif pct >= 15:
+                    line = (f"📈 Recent WTS median {shown} — ~{pct:.0f}% ABOVE your "
+                            f"{ref:,}p check median. Asks are climbing.")
+                    fg = '#00ff66'
+                else:
+                    line = (f"≈ Recent WTS median {shown} — in line with your {ref:,}p "
+                            f"check median.")
+                    fg = '#888888'
+            # One-click price off the live market. Deliberately NO undercut: match
+            # the recent median, don't undercut it (that's the spiral). Packed above
+            # Close, below the hint line.
+            ttk.Button(win, text=f"Set price → {price_str}  (match recent median)",
+                       command=lambda v=price_str: self._use_recent_median(name, v)).pack(
+                side='bottom', pady=(4, 0))
+            ttk.Label(win, text=line, foreground=fg, font=('Segoe UI Emoji', 9, 'bold'),
+                      wraplength=496, justify='left').pack(side='bottom', anchor='w',
+                                                            padx=12, pady=(6, 0))
 
         txt = scrolledtext.ScrolledText(win, bg='#2a2a2a', fg='#cccccc',
                                         font=('Consolas', 9), wrap='none',
@@ -1987,8 +2567,6 @@ Pricing: tlp-auctions.com"""
             who = s.get('auctioneer', '?')
             txt.insert('end', f"{when:<22} {kind}  {price:>9}  {who}\n")
         txt.config(state='disabled')
-
-        ttk.Button(win, text="Close", command=win.destroy).pack(pady=(0, 10))
 
     def _clear(self):
         self.auction_items.clear()
@@ -2413,6 +2991,64 @@ Pricing: tlp-auctions.com"""
         self._log(f"Update available: v{latest} (you have v{APP_VERSION}) — "
                   f"{RELEASES_URL}")
 
+    def _refresh_krono_rate(self):
+        """Pull the live krono->plat rate (tlp-auctions 1-day avg) in the
+        background and apply it, so 'kr' conversions use the real number instead
+        of the guessed fallback. Best-effort and silent on failure."""
+        def work():
+            rate = fetch_krono_rate(_config["server"])
+            if rate:
+                self.root.after(0, lambda: self._apply_krono_rate(rate))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _apply_krono_rate(self, rate, persist=True):
+        """Make a freshly-synced rate the effective krono rate everywhere, stamp
+        the sync time, and (by default) persist both as the offline fallback so
+        the value self-maintains across runs. Called from the startup auto-sync
+        and the Settings 'Sync' button."""
+        global DEFAULT_KRONO_RATE
+        DEFAULT_KRONO_RATE = rate
+        self.krono_rate = rate
+        self.krono_synced_at = datetime.now().timestamp()
+        self._log(f"Krono rate: {rate}p/kr (TLP Auctions 1-day avg)")
+        self._update_krono_label()
+        # Re-tag auction rows: any krono-priced items fold at the new rate.
+        if self.auction_items:
+            self._refresh_vendor_flags()
+        if persist:
+            self.settings['krono_rate'] = rate
+            self.settings['krono_synced_at'] = self.krono_synced_at
+            try:
+                save_settings(self.settings)
+            except OSError:
+                pass  # best-effort; the live rate still applies this session
+
+    @staticmethod
+    def _fmt_synced(ts):
+        """Format a sync epoch as a short local timestamp — time-only if it
+        happened today, else 'mm/dd h:mmAM'. Empty string if never synced."""
+        if not ts:
+            return ""
+        try:
+            dt = datetime.fromtimestamp(ts)
+        except (OSError, OverflowError, ValueError):
+            return ""
+        t = dt.strftime('%I:%M%p').lstrip('0').lower()  # 9:14am
+        if dt.date() == datetime.now().date():
+            return t
+        return dt.strftime('%m/%d ') + t
+
+    def _update_krono_label(self):
+        """Refresh the top-bar krono note from the current rate + sync time."""
+        if not hasattr(self, 'krono_status_var'):
+            return
+        synced = self._fmt_synced(self.krono_synced_at)
+        if synced:
+            self.krono_status_var.set(
+                f"krono {self.krono_rate:,}p · synced @ {synced}")
+        else:
+            self.krono_status_var.set(f"krono {self.krono_rate:,}p (fallback)")
+
     def _generate(self):
         if not self.auction_items:
             messagebox.showwarning("Warning", "No items in auction")
@@ -2550,7 +3186,7 @@ Pricing: tlp-auctions.com"""
 
 
 def main():
-    parser = argparse.ArgumentParser(description="EQ Auction Forge v1.4.0(beta) - wangel")
+    parser = argparse.ArgumentParser(description="EQ Auction Forge v1.4.2(beta) - wangel")
     parser.add_argument("--db", default=ITEMS_DB)
     args = parser.parse_args()
 
