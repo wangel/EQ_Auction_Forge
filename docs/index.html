@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EQ Auction Forge - stop hand-typing your EC tunnel WTS macros</title>
+<meta name="description" content="Free EverQuest TLP tool I made because I was sick of typing auction macros by hand. Load your inventory, pull live prices, get a macro full of real clickable item links for the tunnel.">
+<!-- Open Graph / link previews -->
+<meta property="og:title" content="EQ Auction Forge">
+<meta property="og:description" content="Load your bags, pull prices, get a clickable EC tunnel macro. Has a log monitor too.">
+<meta property="og:type" content="website">
+<meta property="og:image" content="https://wangel.github.io/EQ_Auction_Forge/img/main.png">
+<style>
+  :root{
+    --bg:#1a1a1a; --panel:#222; --panel2:#2a2a2a; --border:#333;
+    --text:#e6e6e6; --muted:#888; --green:#00ff00; --orange:#FFA500; --blue:#5fafff;
+    --mono:'Consolas','Cascadia Code','SF Mono',Menlo,Monaco,'Courier New',monospace;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font-family:var(--mono); line-height:1.55; font-size:16px;
+  }
+  a{color:var(--blue); text-decoration:none}
+  a:hover{text-decoration:underline}
+  .wrap{max-width:960px; margin:0 auto; padding:0 20px}
+
+  /* Hero */
+  header{
+    text-align:center; padding:64px 20px 40px;
+    border-bottom:1px solid var(--border);
+    background:linear-gradient(180deg,#1c1c1c,#161616);
+  }
+  .logo{font-size:13px; letter-spacing:3px; color:var(--orange); text-transform:uppercase}
+  h1{font-size:clamp(30px,6vw,52px); margin:10px 0 6px; color:var(--green)}
+  .tag{font-size:clamp(15px,2.5vw,20px); color:var(--text); margin:0 auto 8px; max-width:680px}
+  .sub{color:var(--muted); font-size:14px}
+  .badge{display:inline-block; margin-top:14px; padding:3px 10px; border:1px solid var(--orange);
+    color:var(--orange); border-radius:4px; font-size:12px; letter-spacing:1px}
+
+  /* Buttons */
+  .cta{margin-top:28px; display:flex; gap:14px; justify-content:center; flex-wrap:wrap}
+  .btn{
+    display:inline-block; padding:13px 26px; border-radius:6px; font-size:16px;
+    font-weight:bold; border:1px solid transparent; cursor:pointer;
+  }
+  .btn-primary{background:var(--green); color:#0a0a0a}
+  .btn-primary:hover{background:#5cff5c; text-decoration:none}
+  .btn-ghost{border-color:var(--border); color:var(--text); background:var(--panel)}
+  .btn-ghost:hover{border-color:var(--blue); text-decoration:none}
+
+  /* Sections */
+  section{padding:48px 0; border-bottom:1px solid var(--border)}
+  h2{color:var(--orange); font-size:24px; margin:0 0 24px}
+  h2 .hash{color:var(--border)}
+
+  /* What's new cards */
+  .grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:18px}
+  .card{background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:20px}
+  .card.new{border-color:#3a4a1a}
+  .card h3{margin:0 0 8px; font-size:18px; color:var(--green)}
+  .card .new-tag{font-size:11px; color:var(--orange); border:1px solid var(--orange);
+    padding:1px 6px; border-radius:3px; margin-left:6px; vertical-align:middle}
+  .card p{margin:0; color:#cfcfcf; font-size:14px}
+
+  /* Feature list */
+  ul.feat{list-style:none; padding:0; margin:0; columns:2; column-gap:32px}
+  ul.feat li{margin:0 0 12px; padding-left:22px; position:relative; font-size:14.5px; break-inside:avoid}
+  ul.feat li::before{content:'▸'; color:var(--green); position:absolute; left:0}
+  @media(max-width:640px){ul.feat{columns:1}}
+
+  /* Trust block */
+  .trust{background:var(--panel2); border:1px solid var(--border); border-radius:8px; padding:24px}
+  .trust ul{list-style:none; padding:0; margin:0}
+  .trust li{margin:0 0 12px; padding-left:26px; position:relative}
+  .trust li::before{content:'✓'; color:var(--green); position:absolute; left:0; font-weight:bold}
+  .trust .no::before{content:'✕'; color:#ff6b6b}
+
+  /* Screenshots */
+  .shots{display:grid; grid-template-columns:repeat(2,1fr); gap:24px}
+  .shots figure{margin:0}
+  .shots figure.wide{grid-column:1 / -1}
+  .shots img{width:100%; border:1px solid var(--border); border-radius:8px; display:block}
+  .shots figcaption{color:var(--muted); font-size:13px; text-align:center; margin-top:8px}
+  @media(max-width:640px){.shots{grid-template-columns:1fr} .shots figure.wide{grid-column:auto}}
+
+  /* Steps */
+  ol.steps{counter-reset:s; list-style:none; padding:0; margin:0}
+  ol.steps li{counter-increment:s; padding:10px 0 10px 44px; position:relative; border-bottom:1px solid var(--border)}
+  ol.steps li:last-child{border-bottom:none}
+  ol.steps li::before{content:counter(s); position:absolute; left:0; top:8px;
+    width:28px; height:28px; line-height:28px; text-align:center; border-radius:50%;
+    background:var(--panel); border:1px solid var(--green); color:var(--green); font-size:14px}
+
+  footer{text-align:center; padding:40px 20px; color:var(--muted); font-size:13px}
+  footer a{color:var(--muted); text-decoration:underline}
+  code{background:#000; padding:2px 6px; border-radius:3px; color:var(--green); font-size:13px}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <div class="logo">EverQuest · TLP · EC Tunnel</div>
+    <h1>EQ Auction Forge</h1>
+    <p class="tag">I got tired of hand-typing WTS macros in the tunnel, so I made this.
+      Load your bags, pull prices, get a macro full of real clickable links. Done.</p>
+    <p class="sub">free, open source, one python file. no installer, no nonsense.</p>
+    <div class="badge">v1.4.0 (beta)</div>
+    <div class="cta">
+      <a class="btn btn-primary" href="https://github.com/wangel/EQ_Auction_Forge/releases/latest">⬇ Download (free)</a>
+      <a class="btn btn-ghost" href="https://github.com/wangel/EQ_Auction_Forge">Read the source</a>
+    </div>
+  </div>
+</header>
+
+<section>
+  <div class="wrap">
+    <h2><span class="hash">#</span> How it works</h2>
+    <ol class="steps">
+      <li>In game, type <code>/outputfile inventory</code> and load the dump it spits out.</li>
+      <li>Hit price check. It pulls <strong>live median prices</strong> and you can undercut by whatever % you want.</li>
+      <li>It builds a social macro with <strong>real clickable item links</strong>, the same kind a player would link in the tunnel. Took me forever to get these rendering right, btw.</li>
+      <li>Writes it to your character INI (makes a backup first), then you tab in and auction.</li>
+    </ol>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2><span class="hash">#</span> New in 1.4.0</h2>
+    <div class="grid">
+      <div class="card new">
+        <h3>Live Log Monitor <span class="new-tag">NEW</span></h3>
+        <p>Watches your log and beeps you the second someone WTB/WTS something on your
+        watchlist. Set shorthand aliases so you don't have to type the full item name. Now I
+        actually catch deals while I'm tabbed out doing other stuff.</p>
+      </div>
+      <div class="card new">
+        <h3>Vendor Value <span class="new-tag">NEW</span></h3>
+        <p>Punch in your Charisma and it estimates the NPC vendor price for everything, so you
+        know what's actually worth tunneling vs. what you should just dump on a merchant.</p>
+      </div>
+      <div class="card new">
+        <h3>Smart 3-Band Macro <span class="new-tag">NEW</span></h3>
+        <p>Expensive stuff becomes clickable links, mid-tier stuff becomes compact text (still
+        gets price-tracked), and straight-up vendor trash gets yanked out and listed by bag
+        slot so you know what to go sell.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2><span class="hash">#</span> Other stuff it does</h2>
+    <ul class="feat">
+      <li>Live median pricing pulled from <a href="https://www.tlp-auctions.com" target="_blank" rel="noopener">TLP Auctions</a></li>
+      <li>Undercut %, rounds to the nearest 5p so you're not posting 294p</li>
+      <li>Recent Postings, see what people actually sold an item for lately</li>
+      <li>Writes clean social buttons to your INI, leaves your hand-made ones alone</li>
+      <li>Backs up before writing, and never touches your page 1 action bar</li>
+      <li>Multi-select, click any column header to sort, tracks quantities</li>
+      <li>Bags-only filter so your worn gear doesn't clutter the list</li>
+      <li>Auto-tosses worthless newbie junk (backpacks, bread cakes, etc)</li>
+      <li>~133k item DB bundled in, so it works offline, no website to dig through</li>
+      <li>Pure stdlib python, one file, runs on whatever Windows python you've got</li>
+    </ul>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2><span class="hash">#</span> Screenshots</h2>
+    <div class="shots">
+      <figure class="wide">
+        <img src="img/main.png" alt="EQ Auction Forge main window">
+        <figcaption>the main window. your bags on the left, the auction list on the right. colors flag krono, vendor trash, and stuff that's drifted off the market.</figcaption>
+      </figure>
+      <figure>
+        <img src="img/macro_builder.png" alt="Macro builder showing generated INI output">
+        <figcaption>the macro builder. it spits out the actual INI text, pricey stuff as clickable links, the rest as compact WTS lines.</figcaption>
+      </figure>
+      <figure>
+        <img src="img/log_monitor.png" alt="Log monitor watching the tunnel for WTB/WTS">
+        <figcaption>the log monitor watching the tunnel. someone WTBs something on your watchlist, it grabs you a /tell ready to paste.</figcaption>
+      </figure>
+      <figure>
+        <img src="img/watchlist.png" alt="Watchlist editor">
+        <figcaption>the watchlist. drop in full names, aliases, or just a keyword and it'll catch anything that matches.</figcaption>
+      </figure>
+      <figure>
+        <img src="img/settings.png" alt="Settings window">
+        <figcaption>settings. krono rate, undercut, your charisma, and the junk-filter list all live here.</figcaption>
+      </figure>
+      <figure class="wide">
+        <img src="img/recent_postings.png" alt="Recent Postings popup showing real sales">
+        <figcaption>recent postings, so you can see what something's actually been selling for before you price it.</figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2><span class="hash">#</span> "is this gonna steal my account?"</h2>
+    <div class="trust">
+      <ul>
+        <li><strong>No.</strong> It never touches your account, your password, or the actual game client. Can't log in as you, wouldn't know how.</li>
+        <li>All it reads is your inventory dump and your log file. All it writes is social buttons into your character INI, and it makes a <code>.bak</code> copy before it does even that.</li>
+        <li>The only times it talks to the internet: pulling prices from <a href="https://www.tlp-auctions.com" target="_blank" rel="noopener">TLP Auctions</a>, and a github check to see if there's a newer version. That's the whole list.</li>
+        <li class="no">It's not phoning home or shipping your info off to Microsoft or Big Brother or whoever. It's a tool I threw together to sell my junk in the tunnel because I'm bad at remembering what stuff is worth, lol. That's the entire master plan.</li>
+        <li>It's open source. The whole thing is one python file sitting on github. If you don't trust me, read it, or get a friend who codes to read it.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap" style="text-align:center">
+    <h2 style="text-align:left"><span class="hash">#</span> Grab it</h2>
+    <div class="cta" style="margin-top:8px">
+      <a class="btn btn-primary" href="https://github.com/wangel/EQ_Auction_Forge/releases/latest">⬇ Download latest release</a>
+      <a class="btn btn-ghost" href="https://github.com/wangel/EQ_Auction_Forge/issues/new?labels=feedback">🐞 Something broke? Tell me</a>
+    </div>
+    <p class="sub" style="margin-top:18px">Still beta, so it'll have rough edges. If you hit a bug or have an idea, open an issue, I read them.</p>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <p><a href="https://github.com/wangel/EQ_Auction_Forge">GitHub</a> ·
+       <a href="https://github.com/wangel/EQ_Auction_Forge/releases">Releases</a> ·
+       <a href="https://github.com/wangel/EQ_Auction_Forge/issues">Issues</a></p>
+    <p>made by some guy who plays too much TLP. it's a python file, not a startup.</p>
+    <p>Free, fan-made, not affiliated with or endorsed by Daybreak or Darkpaw. EverQuest is
+       their trademark, not mine.</p>
+  </div>
+</footer>
+
+</body>
+</html>
