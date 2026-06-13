@@ -380,7 +380,7 @@ def apply_runtime_settings(settings):
     EXCLUDED_ITEMS = set(_DEFAULT_EXCLUDED) | user_ex
 
 
-APP_VERSION = "1.4.2(beta)"
+APP_VERSION = "1.4.2"
 
 # Identify ourselves to the TLP Auctions API. Their operator asked tool authors
 # to send a custom User-Agent so legit tool traffic isn't mistaken for spam and
@@ -593,7 +593,7 @@ class AuctionBuilder:
         self.krono_synced_at = self.settings.get('krono_synced_at')
 
         self.root = tk.Tk()
-        self.root.title("EQ Auction Forge v1.4.2(beta) — by wangel")
+        self.root.title("EQ Auction Forge v1.4.2 — by wangel")
         self.root.configure(bg='#1a1a1a')
         # Open wide enough for the right-side price controls + columns, centered,
         # with a sane minimum so it can't be squished into uselessness. Resizes
@@ -959,7 +959,7 @@ class AuctionBuilder:
             font=('Consolas', 9), wrap='word', padx=10, pady=10)
         txt.pack(fill='both', expand=True, padx=10, pady=10)
 
-        help_text = """EQ Auction Forge v1.4.2(beta)
+        help_text = """EQ Auction Forge v1.4.2
 by wangel
 
 HOW TO USE (auction macros):
@@ -3186,7 +3186,7 @@ Pricing: tlp-auctions.com"""
 
 
 def main():
-    parser = argparse.ArgumentParser(description="EQ Auction Forge v1.4.2(beta) - wangel")
+    parser = argparse.ArgumentParser(description="EQ Auction Forge v1.4.2 - wangel")
     parser.add_argument("--db", default=ITEMS_DB)
     args = parser.parse_args()
 
