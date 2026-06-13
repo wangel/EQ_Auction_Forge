@@ -26,6 +26,12 @@ items.txt
 Cletus_Logs/
 eqlog_*.txt
 
+# Local-only dev/adoption tooling (not shipped)
+download_stats.py
+prototypes/
+Inventory_Sample.txt
+Inventory_Test.txt
+
 # IDE
 .vscode/
 .idea/
