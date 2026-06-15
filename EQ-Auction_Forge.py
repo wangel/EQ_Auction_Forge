@@ -161,15 +161,23 @@ _ssl_ctx.verify_mode = ssl.CERT_NONE
 
 
 def load_item_database(gz_path):
-    """Load the item DB. Returns (links, ids, prices):
+    """Load the item DB. Returns (links, ids, prices, by_id):
       links:  name -> itemlink (hash+name) for building clickable links
       ids:    name -> item id (int) for the bulk price API
       prices: name -> base merchant value in COPPER (the 'price' column),
               used to estimate NPC vendor value (1pp = 1000cp)
+      by_id:  item id (int) -> {'link', 'price', 'name'} — the unambiguous
+              lookups. The DB has DISTINCT items sharing a display name (e.g.
+              two 'Mistmoore Battle Drums', ids 10177 vs 81785), so the name
+              maps above silently collide; matching on the id from an inventory
+              dump disambiguates exactly. Name maps are first-row-wins fallbacks
+              for items with no known id (DB search, log monitor, legacy saves).
     """
     items = {}
     ids = {}
     prices = {}
+    by_id = {}
+    dup_names = 0
     txt_path = os.path.join(_cache_dir(), 'items.txt')
     gz_ok = os.path.isfile(gz_path)
     # Re-extract when the cache is missing OR the bundled .gz is newer than the
@@ -198,18 +206,30 @@ def load_item_database(gz_path):
                 name = row.get('name', '').strip()
                 link = row.get('itemlink', '').strip()
                 if name and link:
-                    items[name] = link
+                    pr = row.get('price', '').strip()
+                    price = int(pr) if pr.isdigit() else None
                     item_id = row.get('id', '').strip()
-                    if item_id.isdigit() and name not in ids:
-                        ids[name] = int(item_id)
-                    if name not in prices:
-                        pr = row.get('price', '').strip()
-                        if pr.isdigit():
-                            prices[name] = int(pr)
+                    iid = int(item_id) if item_id.isdigit() else None
+                    # id-keyed maps are the unambiguous source (ids are unique).
+                    if iid is not None:
+                        by_id[iid] = {'link': link, 'price': price, 'name': name}
+                    # Name-keyed fallbacks are FIRST-row-wins across the board so
+                    # link/id/price agree on a name collision (they used to not).
+                    if name in items:
+                        dup_names += 1
+                    else:
+                        items[name] = link
+                        if iid is not None:
+                            ids[name] = iid
+                        if price is not None:
+                            prices[name] = price
             except Exception:
                 continue
     print(f"  {len(items)} items loaded")
-    return items, ids, prices
+    if dup_names:
+        print(f"  ({dup_names} duplicate item name(s) in DB — id matching "
+              f"disambiguates inventory items)")
+    return items, ids, prices, by_id
 
 
 # Worthless newbie/starter items that clutter the inventory list but never get
@@ -244,7 +264,7 @@ def load_inventory(filepath):
     (see EXCLUDED_ITEMS) are dropped. Returns a list of
     {'name', 'location', 'count'} in first-seen order.
     """
-    combined = {}  # name -> {'name', 'location', 'count'}
+    combined = {}  # key (id or name) -> {'name', 'location', 'count', 'id'}
     order = []
     with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
         header = None
@@ -261,6 +281,7 @@ def load_inventory(filepath):
             ni = header.index('name') if 'name' in header else 1
             li = header.index('location') if 'location' in header else 0
             ci = header.index('count') if 'count' in header else None
+            ii = header.index('id') if 'id' in header else None
             name = parts[ni].strip().rstrip('*')
             loc = parts[li].strip()
             # '' / 'empty' = empty slots; 'name' = the KeyRing sub-header row
@@ -275,12 +296,23 @@ def load_inventory(filepath):
                     count = max(int(parts[ci].strip()), 1)
                 except ValueError:
                     count = 1
-            if name in combined:
-                combined[name]['count'] += count
+            item_id = 0
+            if ii is not None and ii < len(parts):
+                try:
+                    item_id = max(int(parts[ii].strip()), 0)
+                except ValueError:
+                    item_id = 0
+            # Combine stacks/duplicate slots by id (stackables share an id) so
+            # two DISTINCT items that share a display name stay separate rows;
+            # fall back to name when the dump has no id column (item_id == 0).
+            key = item_id if item_id else name
+            if key in combined:
+                combined[key]['count'] += count
             else:
-                combined[name] = {'name': name, 'location': loc, 'count': count}
-                order.append(name)
-    return [combined[n] for n in order]
+                combined[key] = {'name': name, 'location': loc,
+                                 'count': count, 'id': item_id}
+                order.append(key)
+    return [combined[k] for k in order]
 
 
 def make_link(itemlink, item_name):
@@ -380,7 +412,7 @@ def apply_runtime_settings(settings):
     EXCLUDED_ITEMS = set(_DEFAULT_EXCLUDED) | user_ex
 
 
-APP_VERSION = "1.4.2"
+APP_VERSION = "1.4.3"
 
 # Identify ourselves to the TLP Auctions API. Their operator asked tool authors
 # to send a custom User-Agent so legit tool traffic isn't mistaken for spam and
@@ -560,6 +592,8 @@ class AuctionBuilder:
         self.item_db = {}
         self.item_ids = {}
         self.item_prices = {}  # name -> base value in copper (for vendor estimate)
+        self.item_by_id = {}   # id -> {'link','price','name'}; unambiguous lookup
+        self.inv_row_id = {}   # inventory tree iid -> item id, for exact actions
         self._last_median = {}  # name -> last bulk-API median (plat), for the recent-asks hint
         self.inventory = []
         self.inv_by_name = {}  # name -> inventory entry, for count/location lookups
@@ -593,7 +627,7 @@ class AuctionBuilder:
         self.krono_synced_at = self.settings.get('krono_synced_at')
 
         self.root = tk.Tk()
-        self.root.title("EQ Auction Forge v1.4.2 — by wangel")
+        self.root.title("EQ Auction Forge v1.4.3 — by wangel")
         self.root.configure(bg='#1a1a1a')
         # Open wide enough for the right-side price controls + columns, centered,
         # with a sane minimum so it can't be squished into uselessness. Resizes
@@ -959,7 +993,7 @@ class AuctionBuilder:
             font=('Consolas', 9), wrap='word', padx=10, pady=10)
         txt.pack(fill='both', expand=True, padx=10, pady=10)
 
-        help_text = """EQ Auction Forge v1.4.2
+        help_text = """EQ Auction Forge v1.4.3
 by wangel
 
 HOW TO USE (auction macros):
@@ -1858,7 +1892,8 @@ Pricing: tlp-auctions.com"""
             self._lm_win = None
 
     def _load_db(self):
-        self.item_db, self.item_ids, self.item_prices = load_item_database(self.db_path)
+        (self.item_db, self.item_ids, self.item_prices,
+         self.item_by_id) = load_item_database(self.db_path)
         if self.item_db:
             self.db_count_var.set(f"{len(self.item_db)} items in DB")
             self.status_var.set("Ready")
@@ -1884,6 +1919,10 @@ Pricing: tlp-auctions.com"""
 
     def _apply_filter(self):
         self.item_tree.delete(*self.item_tree.get_children())
+        # Rebuilt each pass: maps the visible tree row -> the item's real id, so
+        # add-to-auction / left price-check / Recent Postings act on the exact
+        # item even when two rows share a display name.
+        self.inv_row_id = {}
         search = self.filter_var.get().strip().lower()
         inv_only = self.inv_only_var.get()
         bags_only = self.bags_only_var.get()
@@ -1897,11 +1936,13 @@ Pricing: tlp-auctions.com"""
                     continue
                 if search and search not in name.lower():
                     continue
-                if name in self.item_db:
-                    self.item_tree.insert(
+                item_id = self._item_id(item)
+                if name in self.item_db or item_id in self.item_by_id:
+                    row = self.item_tree.insert(
                         '', 'end',
                         values=(name, self._qty_str(item.get('count', 1)),
-                                item['location'], self._vendor_str(name)))
+                                item['location'], self._vendor_str(name, item_id)))
+                    self.inv_row_id[row] = item_id
                     count += 1
                     if count >= 200:
                         break
@@ -1914,10 +1955,12 @@ Pricing: tlp-auctions.com"""
                              key=str.lower)
             for name in matches[:200]:
                 inv = self.inv_by_name.get(name, {})
-                self.item_tree.insert(
+                item_id = self._item_id(inv)
+                row = self.item_tree.insert(
                     '', 'end',
                     values=(name, self._qty_str(inv.get('count', 1)),
-                            inv.get('location', ""), self._vendor_str(name)))
+                            inv.get('location', ""), self._vendor_str(name, item_id)))
+                self.inv_row_id[row] = item_id
                 count += 1
         self.item_count_var.set(f"({count})")
 
@@ -1936,11 +1979,46 @@ Pricing: tlp-auctions.com"""
         except (ValueError, AttributeError):
             return None
 
-    def _vendor_str(self, name):
+    @staticmethod
+    def _item_id(item):
+        """The real DB id carried on an item dict (from the inventory dump), or 0
+        when unknown — 0 means 'fall back to name lookups'."""
+        try:
+            return int(item.get('id') or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def _link_for(self, item):
+        """itemlink (hash+name) for an auction item — by id when known (exact),
+        else by name (ambiguous when the DB has duplicate names)."""
+        iid = self._item_id(item)
+        rec = self.item_by_id.get(iid) if iid else None
+        if rec is not None:
+            return rec['link']
+        return self.item_db.get(item['name'])
+
+    def _price_id_for(self, item):
+        """Bulk-price-API item id for an auction item — the carried id when known
+        (exact), else the name's first DB row."""
+        iid = self._item_id(item)
+        if iid and iid in self.item_by_id:
+            return iid
+        return self.item_ids.get(item['name'])
+
+    def _base_copper(self, name, item_id=0):
+        """Item base merchant value (copper) used for the NPC-vendor estimate.
+        Prefers the exact id (disambiguates duplicate names), else the name's
+        first DB row. None when the item has no DB price."""
+        rec = self.item_by_id.get(item_id) if item_id else None
+        if rec is not None:
+            return rec['price']
+        return self.item_prices.get(name)
+
+    def _vendor_str(self, name, item_id=0):
         """Vendor-value cell for an item: base price x M(CHA), in plat. Blank
         when CHA isn't set or the item has no DB price."""
         cha = self._cha()
-        price = self.item_prices.get(name)
+        price = self._base_copper(name, item_id)
         if cha is None or not price:
             return ""
         pp = vendor_value_pp(price, cha)
@@ -2074,7 +2152,7 @@ Pricing: tlp-auctions.com"""
         """Tree row tuple for an auction item: (name, price, qty, vendor)."""
         return (item['name'], item.get('price', ''),
                 self._qty_str(item.get('count', 1)),
-                self._vendor_str(item['name']))
+                self._vendor_str(item['name'], self._item_id(item)))
 
     def _add_rows_to_auction(self, sel):
         """Add the given item-tree rows to the auction list."""
@@ -2082,10 +2160,13 @@ Pricing: tlp-auctions.com"""
         added = 0
         for iid in sel:
             name = str(self.item_tree.item(iid)['values'][0])
-            if name not in self.item_db:
+            # Prefer the exact id stashed on the row (disambiguates duplicate
+            # names); fall back to the name's inventory entry / DB presence.
+            item_id = self.inv_row_id.get(iid, 0)
+            if not item_id and name not in self.item_db:
                 continue
             count = self.inv_by_name.get(name, {}).get('count', 1)
-            item = {'name': name, 'price': price, 'count': count}
+            item = {'name': name, 'price': price, 'count': count, 'id': item_id}
             self.auction_items.append(item)
             self.auc_tree.insert('', 'end', values=self._auc_values(item))
             added += 1
@@ -2281,11 +2362,16 @@ Pricing: tlp-auctions.com"""
             sel = self.item_tree.selection()
             if not sel:
                 return
-            name = self.item_tree.item(sel[0])['values'][0]
+            name = str(self.item_tree.item(sel[0])['values'][0])
+            item_id = self._price_id_for(
+                {'name': name, 'id': self.inv_row_id.get(sel[0], 0)})
         else:
-            name = self.auc_tree.item(sel[0])['values'][0]
+            idx = self.auc_tree.index(sel[0])
+            item = (self.auction_items[idx] if idx < len(self.auction_items)
+                    else {'name': str(self.auc_tree.item(sel[0])['values'][0])})
+            name = item['name']
+            item_id = self._price_id_for(item)
 
-        item_id = self.item_ids.get(name)
         if item_id is None:
             self._log(f"  {name}: no item id in DB")
             return
@@ -2317,7 +2403,7 @@ Pricing: tlp-auctions.com"""
         # Pair each auction row with its item id, flagging any missing from the DB.
         targets = []  # (idx, name, item_id)
         for idx, item in enumerate(self.auction_items):
-            item_id = self.item_ids.get(item['name'])
+            item_id = self._price_id_for(item)
             if item_id is None:
                 self.root.after(0, lambda n=item['name']:
                                 self._log(f"  {n}: no item id in DB"))
@@ -2362,7 +2448,7 @@ Pricing: tlp-auctions.com"""
             return
         lines = []
         for it in flagged:
-            vpp = self._vendor_pp(it['name'])
+            vpp = self._vendor_pp(it['name'], self._item_id(it))
             vstr = f"{vpp:.0f}p" if vpp is not None else "?"
             lines.append(f"• {it['name']}: player {it.get('price', '')} / vendor {vstr}")
         shown = lines[:15]
@@ -2422,7 +2508,8 @@ Pricing: tlp-auctions.com"""
         targets = []  # (name, item_id)
         for iid in sel:
             name = str(self.item_tree.item(iid)['values'][0])
-            item_id = self.item_ids.get(name)
+            item_id = self._price_id_for(
+                {'name': name, 'id': self.inv_row_id.get(iid, 0)})
             if item_id is None:
                 self._log(f"  {name}: no item id in DB")
             else:
@@ -2616,8 +2703,12 @@ Pricing: tlp-auctions.com"""
                 name = item.get('name', '')
                 price = item.get('price', '')
                 count = item.get('count', 1)
+                # 'id' disambiguates duplicate names; legacy saves lack it (0 ->
+                # name fallback, the old behavior).
+                item_id = item.get('id', 0) if isinstance(item, dict) else 0
                 if name:
-                    entry = {'name': name, 'price': price, 'count': count}
+                    entry = {'name': name, 'price': price, 'count': count,
+                             'id': item_id}
                     self.auction_items.append(entry)
                     self.auc_tree.insert('', 'end', values=self._auc_values(entry))
             self._log(f"Loaded {len(self.auction_items)} items from {os.path.basename(path)}")
@@ -2865,11 +2956,11 @@ Pricing: tlp-auctions.com"""
         0 = link everything (classic behavior)."""
         return self._parse_plat_value(self.threshold_var.get())
 
-    def _vendor_pp(self, name):
+    def _vendor_pp(self, name, item_id=0):
         """Estimated NPC buyback (plat float) for an item at the current CHA, or
         None if CHA isn't set / the item has no DB base price."""
         cha = self._cha()
-        price = self.item_prices.get(name)
+        price = self._base_copper(name, item_id)
         if cha is None or not price:
             return None
         return vendor_value_pp(price, cha)
@@ -2881,7 +2972,7 @@ Pricing: tlp-auctions.com"""
         kind, plat = self._classify_price(item.get('price', ''))
         if kind != 'plat':
             return False
-        vpp = self._vendor_pp(item['name'])
+        vpp = self._vendor_pp(item['name'], self._item_id(item))
         return vpp is not None and vpp >= plat
 
     @staticmethod
@@ -2959,7 +3050,7 @@ Pricing: tlp-auctions.com"""
         rows = []
         for it in trash:
             loc = self.inv_by_name.get(it['name'], {}).get('location', '?')
-            vpp = self._vendor_pp(it['name'])
+            vpp = self._vendor_pp(it['name'], self._item_id(it))
             vstr = f"{vpp:.0f}p" if vpp is not None else "?"
             rows.append((it['name'], it.get('price', ''), vstr, loc))
             self._log(f"  VENDOR ({vstr} vs {it.get('price', '')}): "
@@ -3084,12 +3175,14 @@ Pricing: tlp-auctions.com"""
         # Every sellable item needs a DB link for the link group — bail early
         # (and clearly) if one is missing rather than half-generating.
         for item in sellable:
-            if not self.item_db.get(item['name']):
+            if not self._link_for(item):
                 messagebox.showwarning("Missing", f"No link: {item['name']}")
                 return
 
         def link_token(item):
-            link = make_link(self.item_db[item['name']], item['name'])
+            # Link by the item's real id when known (disambiguates duplicate
+            # names like the two 'Mistmoore Battle Drums'); else by name.
+            link = make_link(self._link_for(item), item['name'])
             # No "xN": tlp-auctions reads a trailing "x2" as two-for-price.
             return f"{link} {item['price']}" if item['price'] else link
 
@@ -3186,7 +3279,7 @@ Pricing: tlp-auctions.com"""
 
 
 def main():
-    parser = argparse.ArgumentParser(description="EQ Auction Forge v1.4.2 - wangel")
+    parser = argparse.ArgumentParser(description="EQ Auction Forge v1.4.3 - wangel")
     parser.add_argument("--db", default=ITEMS_DB)
     args = parser.parse_args()
 
