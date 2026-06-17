@@ -1,0 +1,57 @@
+name: Build (sandbox)
+
+# SAFE PLAYGROUND — does NOT publish anything.
+#  * Manual trigger only (never runs on its own, no tags, no push triggers).
+#  * Read-only token: it physically cannot create releases, tags, or push.
+#  * Output is uploaded as a throwaway ARTIFACT (expires in 7 days), not a
+#    GitHub Release. Delete this file anytime; nothing depends on it.
+on:
+  workflow_dispatch:        # the "Run workflow" button in the Actions tab
+
+permissions:
+  contents: read            # least privilege — cannot write to the repo at all
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4        # (sandbox uses tags for convenience;
+      - uses: actions/setup-python@v5    #  the real workflow will pin to SHAs)
+        with:
+          python-version: '3.12'
+
+      - name: Poke around the runner
+        shell: pwsh
+        run: |
+          Write-Host "Runner OS : $env:RUNNER_OS"
+          python --version
+          Write-Host "--- repo contents ---"
+          Get-ChildItem
+
+      - name: Read APP_VERSION (single source of truth)
+        id: ver
+        shell: pwsh
+        run: |
+          $src = Get-Content EQ-Auction_Forge.py -Raw
+          if ($src -notmatch 'APP_VERSION\s*=\s*"([^"]+)"') { throw "APP_VERSION not found" }
+          "version=$($Matches[1])" >> $env:GITHUB_OUTPUT
+          Write-Host "APP_VERSION = $($Matches[1])"
+
+      - name: Provision the venv build.ps1 expects, install Nuitka
+        shell: pwsh
+        run: |
+          python -m venv .venv
+          .\.venv\Scripts\python -m pip install --upgrade pip
+          .\.venv\Scripts\python -m pip install nuitka
+          .\.venv\Scripts\python -m nuitka --version
+
+      - name: Build + stage + zip (reuses build.ps1, no -Publish)
+        shell: pwsh
+        run: .\build.ps1
+
+      - name: Upload the zip as an ARTIFACT (not a release)
+        uses: actions/upload-artifact@v4
+        with:
+          name: EQ_Auction_Forge_v${{ steps.ver.outputs.version }}_sandbox
+          path: EQ_Auction_Forge_v*_Windows.zip
+          retention-days: 7
