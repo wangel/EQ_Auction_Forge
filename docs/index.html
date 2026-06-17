@@ -107,7 +107,7 @@
     <p class="tag">I got tired of hand-typing WTS macros in the tunnel, so I made this.
       Load your bags, pull prices, get a macro full of real clickable links. Done.</p>
     <p class="sub">free, open source, one python file. no installer, no nonsense.</p>
-    <div class="badge">v1.4.3</div>
+    <div class="badge">v1.4.4</div>
     <div class="cta">
       <a class="btn btn-primary" href="https://github.com/wangel/EQ_Auction_Forge/releases/latest">⬇ Download (free)</a>
       <a class="btn btn-ghost" href="https://github.com/wangel/EQ_Auction_Forge">Read the source</a>
@@ -129,8 +129,16 @@
 
 <section>
   <div class="wrap">
-    <h2><span class="hash">#</span> New in 1.4.3</h2>
+    <h2><span class="hash">#</span> New in 1.4.4</h2>
     <p style="margin:-8px 0 24px; color:#cfcfcf; font-size:14.5px">
+      <strong style="color:var(--green)">1.4.4 — antivirus false-positive fix.</strong> Some scanners
+      (Windows Defender included) were quarantining the download as malware. It was a
+      <strong>false positive</strong> — the old build packed everything into one self-extracting exe,
+      which looks like malware behavior to antivirus heuristics even though the code never changed.
+      1.4.4 is built a different way (a normal program folder instead of a self-extracting exe) and
+      now scans <strong>completely clean</strong> across every major engine, Defender included. The
+      download is a folder now — unzip it and run <code>EQ_Auction_Forge.exe</code> from inside,
+      keep <code>items.txt.gz</code> next to it, same as before.<br><br>
       <strong style="color:var(--green)">1.4.3 — bug fix.</strong> Some items in the DB share a
       name (there's a newbie <em>Mistmoore Battle Drums</em> and a raid one, an <em>Apothic Robe</em>
       that's really two items, ~5,400 names total). It used to match by name and could link the wrong
