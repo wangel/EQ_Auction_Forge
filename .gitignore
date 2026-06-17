@@ -11,6 +11,13 @@ build/
 release_stage/
 EQ_Auction_Forge_v*_Windows.zip
 
+# Nuitka build output
+nuitka_standalone/
+nuitka_build/
+*.dist/
+*.build/
+*.onefile-build/
+
 # Extracted item database (regenerated from .gz)
 items.txt
 

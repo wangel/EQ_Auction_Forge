@@ -46,10 +46,14 @@ DC2 = '\x12'
 
 
 def _app_dir():
-    """Directory the app lives in — works whether run as a .py or a
-    PyInstaller-frozen .exe. Used to locate items.txt.gz regardless of
-    the current working directory the app was launched from."""
-    if getattr(sys, 'frozen', False):
+    """Directory the app lives in — works whether run as a .py, a
+    PyInstaller-frozen .exe, or a Nuitka standalone build. Used to locate
+    items.txt.gz regardless of the working directory the app was launched
+    from."""
+    # PyInstaller sets sys.frozen; Nuitka injects a module-level __compiled__.
+    # In both packaged cases sys.executable is the real on-disk exe (for a
+    # Nuitka standalone build that's the .dist exe, with items.txt.gz beside it).
+    if getattr(sys, 'frozen', False) or '__compiled__' in globals():
         return os.path.dirname(sys.executable)
     return os.path.dirname(os.path.abspath(__file__))
 
@@ -412,7 +416,7 @@ def apply_runtime_settings(settings):
     EXCLUDED_ITEMS = set(_DEFAULT_EXCLUDED) | user_ex
 
 
-APP_VERSION = "1.4.3"
+APP_VERSION = "1.4.4"
 
 # Identify ourselves to the TLP Auctions API. Their operator asked tool authors
 # to send a custom User-Agent so legit tool traffic isn't mistaken for spam and
