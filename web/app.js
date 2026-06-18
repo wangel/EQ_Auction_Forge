@@ -17,6 +17,9 @@ const DC2 = "\x12";              // EQ item-link delimiter (hex 0x12)
 const BUTTONS_PER_PAGE = 12;
 const MAX_PAGE = 10;
 const BULK_PRICE_LIMIT = 10;     // max item ids per /prices/bulk request
+const DEFAULT_KRONO_RATE = 4000; // fallback fold rate if the API reports none
+const RECENT_CHECK_FLOOR = 1000; // only items with a bulk median >= this get a recent-asks lookup
+const RECENT_SALES_LIMIT = 8;    // recent postings pulled per recent-asks lookup
 // Correct apex host (valid cert). "/api" via dev-proxy.py dodges CORS in dev.
 const API_HOST = "https://tlp-auctions.com/api";
 // Built-in newbie/starter junk dropped from inventory loads (exact, lowercase).
@@ -407,12 +410,91 @@ async function fetchBulk(server, itemIds) {
   }
 }
 
+// Median of a numeric list (avg of the two middles for even length), or null.
+function median(nums) {
+  if (!nums.length) return null;
+  const s = [...nums].sort((a, b) => a - b);
+  const m = s.length >> 1;
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+}
+
+// Live krono->plat rate: the 1-day window average (EC krono moves fast, longer
+// windows lag). Returns an int, or null on failure. Port of fetch_krono_rate.
+async function fetchKronoRate(server) {
+  try {
+    const resp = await fetch(`${apiBase()}/krono-prices/${encodeURIComponent(server)}/windows`,
+      { headers: { "Accept": "application/json" } });
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    const byDays = {};
+    for (const w of data.windows || []) byDays[w.days] = w;
+    for (const d of [1, 2, 3, 7]) {            // freshest window that has data
+      const w = byDays[d];
+      if (w && w.sampleSize > 0 && w.averagePrice > 0) return Math.round(w.averagePrice);
+    }
+  } catch { /* keep fallback */ }
+  return null;
+}
+
+// Recent individual postings for ONE item (exact-name match), newest first.
+// Port of fetch_recent_sales.
+async function fetchRecentSales(name, server, limit = RECENT_SALES_LIMIT) {
+  const qs = new URLSearchParams({ searchTerm: name, exactMatch: "true",
+    serverName: server, pageSize: String(limit) });
+  const resp = await fetch(`${apiBase()}/sales?${qs}`, { headers: { "Accept": "application/json" } });
+  if (!resp.ok) throw new Error("HTTP " + resp.status);
+  const data = await resp.json();
+  return (data.items || []).slice(0, limit);
+}
+
+// Summarize recent WTS asks into a denomination-aware read, or null if <2 priced
+// asks. EC combines currencies, so each ask's effective plat is platPrice +
+// kronoPrice*rate; krono-dominant when more asks name krono than not. Port of
+// _recent_market.
+function recentMarket(sales, rate) {
+  const wts = sales.filter((s) => !s.transactionType);   // transactionType false = WTS
+  const eff = []; let krCount = 0, platCount = 0;
+  for (const s of wts) {
+    const p = s.platPrice || 0, k = s.kronoPrice || 0;
+    if (k > 0) { eff.push(p + k * rate); krCount++; }
+    else if (p > 0) { eff.push(p); platCount++; }
+  }
+  const n = eff.length;
+  const effMed = median(eff);
+  if (effMed === null || n < 2) return null;
+  const isKrono = krCount > platCount;
+  const priceStr = isKrono
+    ? `${Math.max(Math.round((effMed / rate) * 2) / 2, 0.5)}kr`   // nearest 0.5 krono
+    : `${roundTo5(effMed)}p`;
+  return { effMed, n, isKrono, priceStr };
+}
+
+// Resolve one bulk result into a postable price. Plain plat from the median
+// (minus undercut); for items >= RECENT_CHECK_FLOOR, a recent-asks read that
+// either swaps to a krono price (no undercut) or flags plat asks running >=15%
+// under the median for review. Port of _resolve_price.
+async function resolvePrice(name, r, rate, pct, server) {
+  const med = Math.round(r.medianPlatPrice);
+  const platStr = `${Math.max(roundTo5(pct ? med * (1 - pct / 100) : med), 5)}p`;
+  if (med < RECENT_CHECK_FLOOR) return { priceStr: platStr, krono: false, diverge: null };
+  let sales;
+  try { sales = await fetchRecentSales(name, server); }
+  catch { return { priceStr: platStr, krono: false, diverge: null }; }
+  const mk = recentMarket(sales, rate);
+  if (!mk) return { priceStr: platStr, krono: false, diverge: null };
+  if (mk.isKrono) return { priceStr: mk.priceStr, krono: true, diverge: null };  // no undercut on krono
+  const divPct = (mk.effMed - med) / med * 100;
+  if (divPct <= -15 && mk.n >= 3) {
+    return { priceStr: platStr, krono: false, diverge: { recent: mk.priceStr, pct: divPct, n: mk.n } };
+  }
+  return { priceStr: platStr, krono: false, diverge: null };
+}
+
 // Price-check every inventory item that has an id: batch ids <=10 per request,
-// POST /prices/bulk, take the server-computed median plat (minus undercut), and
-// fill the row's price box. The bulk API is id-keyed (names aren't unique), so
-// items with no id are skipped — type those by hand. A failed batch is retried
-// once then skipped (not fatal), so one transient error doesn't lose the whole
-// run. Still TODO from the desktop: krono classification, recent-asks divergence.
+// POST /prices/bulk, then resolve each (plat median minus undercut, or a krono
+// swap / divergence flag for >=1000p items via recent asks). id-keyed, so items
+// with no id are skipped. A failed batch is retried once then skipped (not
+// fatal). Port of _price_check_all + _resolve_price. (Row coloring TODO.)
 async function priceCheckAll() {
   if (!state.db || !state.inventory.length) return;
   const server = ($("server").value || "Frostreaver").trim();
@@ -433,7 +515,11 @@ async function priceCheckAll() {
   log(`Price check: ${ids.length} item(s) on ${server} in ${batches} request(s)` +
       (pct ? `, undercut ${pct}%` : "") + "…");
 
-  let priced = 0, noData = 0, kronoRate = 0, failed = 0, batchErr = 0;
+  // Live 1-day krono rate up front (folds krono asks in the recent-asks read).
+  let rate = await fetchKronoRate(server) || 0;
+
+  let priced = 0, noData = 0, krono = 0, failed = 0, batchErr = 0;
+  const diverged = [];
   try {
     for (let i = 0; i < ids.length; i += BULK_PRICE_LIMIT) {
       const batch = ids.slice(i, i + BULK_PRICE_LIMIT);
@@ -445,31 +531,34 @@ async function priceCheckAll() {
         log(`  batch ${Math.floor(i / BULK_PRICE_LIMIT) + 1}/${batches} failed (${e.message}) — skipped`);
       }
       if (data) {
-        if (data.kronoRate) kronoRate = data.kronoRate;
+        if (!rate && data.kronoRate) rate = data.kronoRate;   // fall back to the bulk rate
         for (const r of data.items || []) {
           const rows = rowsById.get(r.itemId);
           if (!rows) continue;
-          if (r.hasData && r.medianPlatPrice > 0) {
-            const v = pct ? r.medianPlatPrice * (1 - pct / 100) : r.medianPlatPrice;
-            const priceStr = `${Math.max(roundTo5(v), 5)}p`;   // never post 0p
-            for (const it of rows) {
-              it.price = priceStr;
-              if (it._priceInput) it._priceInput.value = priceStr;
-            }
-            priced++;
-          } else {
-            noData++;
+          if (!(r.hasData && r.medianPlatPrice > 0)) { noData++; continue; }
+          const res = await resolvePrice(rows[0].name, r, rate || DEFAULT_KRONO_RATE, pct, server);
+          for (const it of rows) {
+            it.price = res.priceStr;
+            if (it._priceInput) it._priceInput.value = res.priceStr;
           }
+          priced++;
+          if (res.krono) krono++;
+          if (res.diverge) diverged.push({ name: rows[0].name, you: res.priceStr, ...res.diverge });
         }
       }
       st.textContent = `checking… ${Math.min(i + BULK_PRICE_LIMIT, ids.length)}/${ids.length}`;
       await sleep(120);   // gentle pacing between batches
     }
     st.textContent = `done — ${priced} priced, ${noData} no data` + (failed ? `, ${failed} failed` : "");
-    log(`Price check complete: ${priced} priced, ${noData} no data` +
+    log(`Price check complete: ${priced} priced` + (krono ? ` (${krono} krono)` : "") +
+        `, ${noData} no data` +
         (failed ? `, ${failed} failed in ${batchErr} batch(es)` : "") +
         (pct ? `, undercut ${pct}%` : "") +
-        (kronoRate ? ` (krono rate ~${Math.round(kronoRate)}p)` : "") + ".");
+        (rate ? ` (krono rate ~${Math.round(rate)}p)` : "") + ".");
+    if (diverged.length) {
+      log(`${diverged.length} item(s) priced above recent asks — open Recent Postings to reprice:`);
+      for (const d of diverged) log(`  ${d.name}: you ${d.you} / recent ~${d.recent} (${Math.round(d.pct)}%)`);
+    }
     if (failed) {
       if (priced === 0 && noData === 0 && !(($("useProxy") || {}).checked)) {
         log("  → Every batch failed. Direct calls need CORS (not enabled yet) — " +
