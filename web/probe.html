@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TLP-Auctions API probe</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>TLP-Auctions API probe <span class="tag">diagnostic</span></h1>
+    <p class="sub">
+      Throwaway page to see whether a browser can talk to
+      <code>tlp-auctions.com/api</code> directly. The cert is valid for this host
+      (confirmed), so this is really a <strong>CORS</strong> test now. Two things to know up front:
+      browsers <strong>cannot</strong> set a custom <code>User-Agent</code>, and a
+      <code>POST</code> with <code>Content-Type: application/json</code> triggers a
+      CORS <strong>preflight</strong> (an <code>OPTIONS</code> request). If a call
+      fails, <strong>open DevTools → Console/Network</strong> — JS only ever sees a
+      generic "Failed to fetch", but the console says whether it was a
+      <em>CORS policy</em> block or a <em>certificate</em>/TLS error.
+    </p>
+  </header>
+
+  <main>
+    <section class="card">
+      <h2>Settings</h2>
+      <div class="row">
+        <div class="field inline">
+          <label for="server">Server</label>
+          <input type="text" id="server" value="Frostreaver">
+        </div>
+        <div class="field inline">
+          <label for="itemId">Item id</label>
+          <input type="text" id="itemId" value="1001">
+        </div>
+        <div class="field inline">
+          <label for="itemName">Item name (sales)</label>
+          <input type="text" id="itemName" value="Spider Fur Belt">
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Probes</h2>
+      <div class="row">
+        <button id="bulkBtn">POST /api/prices/bulk (preflighted)</button>
+        <button id="salesBtn">GET /api/sales (simple request)</button>
+        <button id="getBtn">GET /api/prices/bulk URL (plain, no headers)</button>
+      </div>
+      <p class="hint">
+        The last button does a bare <code>GET</code> with no custom headers — if even
+        that fails, it's almost certainly the cert/TLS, not CORS.
+      </p>
+      <pre id="out">Results appear here…</pre>
+    </section>
+  </main>
+
+  <script>
+    "use strict";
+    const API = "https://tlp-auctions.com/api";   // correct base (valid cert); endpoints hang off /api
+    const out = document.getElementById("out");
+    const log = (m) => { out.textContent += m + "\n"; out.scrollTop = out.scrollHeight; };
+    const val = (id) => document.getElementById(id).value.trim();
+
+    async function run(label, fn) {
+      log(`\n=== ${label} @ ${new Date().toLocaleTimeString()} ===`);
+      const t0 = performance.now();
+      try {
+        const resp = await fn();
+        const ms = Math.round(performance.now() - t0);
+        log(`status ${resp.status} ${resp.statusText} (${ms}ms)`);
+        const text = await resp.text();
+        log(text.length > 1200 ? text.slice(0, 1200) + "…(truncated)" : text);
+      } catch (e) {
+        const ms = Math.round(performance.now() - t0);
+        log(`FAILED after ${ms}ms: ${e.name}: ${e.message}`);
+        log("→ check DevTools Console: 'CORS policy' = needs whitelist; " +
+            "'ERR_CERT*' / TLS = invalid cert; 'Failed to fetch' alone is ambiguous.");
+      }
+    }
+
+    document.getElementById("bulkBtn").addEventListener("click", () => {
+      const body = JSON.stringify({ serverName: val("server"), itemIds: [parseInt(val("itemId"), 10)] });
+      run("POST /api/prices/bulk", () => fetch(`${API}/prices/bulk`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Accept": "application/json" },
+        body,
+      }));
+    });
+
+    document.getElementById("salesBtn").addEventListener("click", () => {
+      const qs = new URLSearchParams({
+        searchTerm: val("itemName"), exactMatch: "true",
+        serverName: val("server"), pageSize: "8",
+      });
+      run("GET /api/sales", () => fetch(`${API}/sales?${qs}`, { headers: { "Accept": "application/json" } }));
+    });
+
+    document.getElementById("getBtn").addEventListener("click", () => {
+      // Bare GET, no custom headers at all — isolates cert/TLS from CORS preflight.
+      run("GET (bare) /api/prices/bulk", () => fetch(`${API}/prices/bulk`));
+    });
+
+    log("Ready. Pick a probe. (A green status = the browser reached the API.)");
+  </script>
+</body>
+</html>

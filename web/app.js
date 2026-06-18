@@ -267,6 +267,74 @@ async function gunzipToText(arrayBuffer) {
   return await new Response(stream).text();
 }
 
+// ----- IndexedDB cache so the 11.6 MB gz is downloaded only once -----
+const IDB_NAME = "eqaf", IDB_STORE = "kv", DB_KEY = "items-gz";
+function idbOpen() {
+  return new Promise((res, rej) => {
+    const r = indexedDB.open(IDB_NAME, 1);
+    r.onupgradeneeded = () => r.result.createObjectStore(IDB_STORE);
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+}
+async function idbGet(key) {
+  try {
+    const db = await idbOpen();
+    return await new Promise((res, rej) => {
+      const q = db.transaction(IDB_STORE, "readonly").objectStore(IDB_STORE).get(key);
+      q.onsuccess = () => res(q.result || null);
+      q.onerror = () => rej(q.error);
+    });
+  } catch { return null; }
+}
+async function idbPut(key, val) {
+  try {
+    const db = await idbOpen();
+    await new Promise((res, rej) => {
+      const q = db.transaction(IDB_STORE, "readwrite").objectStore(IDB_STORE).put(val, key);
+      q.onsuccess = () => res();
+      q.onerror = () => rej(q.error);
+    });
+  } catch { /* best effort */ }
+}
+async function idbDel(key) {
+  try {
+    const db = await idbOpen();
+    await new Promise((res) => {
+      const q = db.transaction(IDB_STORE, "readwrite").objectStore(IDB_STORE).delete(key);
+      q.onsuccess = () => res(); q.onerror = () => res();
+    });
+  } catch { /* best effort */ }
+}
+
+// Auto-load the bundled item DB: cache-first, then fetch ../items.txt.gz (one
+// level up — single source of truth, not duplicated into web/). Only works when
+// SERVED (localhost / Pages); under file:// fetch is blocked, so we fall back to
+// the manual picker with a clear message.
+async function autoLoadDb({ forceNetwork = false } = {}) {
+  $("dbStatus").textContent = "loading…";
+  try {
+    let buf = forceNetwork ? null : await idbGet(DB_KEY);
+    if (buf) {
+      log("Item DB: using cached copy (IndexedDB).");
+    } else {
+      log("Item DB: fetching items.txt.gz…");
+      const resp = await fetch("../items.txt.gz", { cache: "no-cache" });
+      if (!resp.ok) throw new Error("HTTP " + resp.status);
+      buf = await resp.arrayBuffer();
+      await idbPut(DB_KEY, buf);
+    }
+    state.db = parseItemDb(await gunzipToText(buf));
+    $("dbStatus").textContent = `${state.db.byName.size} items loaded`;
+    log(`Item DB: ${state.db.byName.size} names, ${state.db.byId.size} by id.`);
+    maybeBuildTable();
+  } catch (err) {
+    $("dbStatus").textContent = "auto-load failed — pick the file manually below";
+    log("DB auto-load failed (" + (err && err.message ? err.message : err) +
+        "). Under file:// fetch is blocked — serve via localhost, or use the picker.");
+  }
+}
+
 // =====================================================================
 // UI wiring
 // =====================================================================
@@ -409,11 +477,16 @@ $("iniFile").addEventListener("change", async (e) => {
   log(`Loaded existing INI for merge: ${file.name}`);
 });
 
+$("reloadDb").addEventListener("click", async () => {
+  await idbDel(DB_KEY);
+  autoLoadDb({ forceNetwork: true });
+});
 $("genBtn").addEventListener("click", generate);
 $("writeBtn").addEventListener("click", writeInPlace);
 $("downloadBtn").addEventListener("click", downloadIni);
 
-log("Ready. Load items.txt.gz and an inventory dump to begin.");
+log("Ready.");
+autoLoadDb();   // pull the bundled DB automatically when served (localhost/Pages)
 if (!window.showOpenFilePicker) {
   log("Note: in-place INI write needs Chrome/Edge; the Download button works everywhere.");
 }
