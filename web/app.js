@@ -20,6 +20,8 @@ const BULK_PRICE_LIMIT = 10;     // max item ids per /prices/bulk request
 const DEFAULT_KRONO_RATE = 4000; // fallback fold rate if the API reports none
 const RECENT_CHECK_FLOOR = 1000; // only items with a bulk median >= this get a recent-asks lookup
 const RECENT_SALES_LIMIT = 8;    // recent postings pulled per recent-asks lookup
+// NPC vendor buyback estimate (CHA-based). Port of vendor_multiplier/value_pp.
+const VENDOR_SLOPE = 0.004, VENDOR_INTERCEPT = 0.584, VENDOR_CAP = 1 / 1.05;
 // Correct apex host (valid cert). "/api" via dev-proxy.py dodges CORS in dev.
 const API_HOST = "https://tlp-auctions.com/api";
 // Built-in newbie/starter junk dropped from inventory loads (exact, lowercase).
@@ -664,7 +666,7 @@ function refreshAuction() {
   body.innerHTML = "";
   state.aucSel.clear();
   if (!state.auction.length) {
-    body.innerHTML = `<tr><td colspan="3" class="empty">Add items from the left.</td></tr>`;
+    body.innerHTML = `<tr><td colspan="4" class="empty">Add items from the left.</td></tr>`;
   } else {
     state.auction.forEach((item, i) => {
       const tr = document.createElement("tr");
@@ -672,7 +674,8 @@ function refreshAuction() {
       tr.innerHTML =
         `<td>${escapeHtml(item.name)}</td>` +
         `<td class="qty">${item.count > 1 ? "x" + item.count : ""}</td>` +
-        `<td></td>`;
+        `<td></td>` +
+        `<td class="qty">${escapeHtml(vendorStr(item))}</td>`;
       const input = document.createElement("input");
       input.type = "text";
       input.placeholder = "e.g. 500p";
@@ -747,6 +750,30 @@ function parsePlatValue(raw) {
 }
 function thresholdPlat() { return parsePlatValue($("threshold").value); }
 
+// ----- NPC vendor value (CHA-based) — port of vendor_multiplier/_vendor_pp/_is_vendor_trash -----
+function vendorMultiplier(cha) { return Math.max(0, Math.min(VENDOR_SLOPE * cha + VENDOR_INTERCEPT, VENDOR_CAP)); }
+function vendorValuePp(priceCp, cha) { return (priceCp / 1000) * vendorMultiplier(cha); }
+function chaVal() { const n = parseInt(($("cha") || {}).value, 10); return Number.isFinite(n) && n >= 0 ? n : null; }
+// Base merchant value (copper) for an item, by id (the DB price column). null if unknown.
+function baseCopper(item) { const rec = item.id && state.db ? state.db.byId.get(item.id) : null; return rec ? rec.price : null; }
+function vendorPp(item) { const c = chaVal(), base = baseCopper(item); return (c === null || !base) ? null : vendorValuePp(base, c); }
+function vendorStr(item) { const v = vendorPp(item); return v === null ? "" : (v >= 1 ? `${Math.round(v)}p` : "<1p"); }
+// True if a PLAT-priced item is worth >= as much to a vendor as your post price.
+// Krono/unpriced are never trash (can't compare). Port of _is_vendor_trash.
+function isVendorTrash(item) {
+  const [kind, plat] = classifyPrice(item.price);
+  if (kind !== "plat") return false;
+  const v = vendorPp(item);
+  return v !== null && v >= plat;
+}
+
+// Log the vendor-trash items (with bag location) left out of the macro.
+function reportTrash(trash) {
+  if (!trash.length) return;
+  log(`${trash.length} item(s) worth more to a vendor than to players — left OUT of the macro:`);
+  for (const it of trash) log(`  VENDOR (${vendorStr(it)} vs ${it.price}): ${it.name} @ ${it.location || "?"}`);
+}
+
 function generate() {
   if (!state.db) { log("Item DB not loaded yet — wait for it or check the connection."); return; }
   const prefix = $("prefix").value;
@@ -754,10 +781,20 @@ function generate() {
   const page = parseInt($("page").value, 10) || 2;
   const threshold = thresholdPlat();
 
-  // Generate from the AUCTION list, not the whole inventory.
-  const sellable = state.auction.filter((i) => linkFor(i));
-  const skipped = state.auction.length - sellable.length;
-  if (!sellable.length) { log("No auction items have a DB link to generate."); return; }
+  // Band 1 (trash): worth >= as much to an NPC vendor as your post price. Dropped
+  // from the macro and reported with bag locations so you know what to go sell.
+  const trash = [], nontrash = [];
+  for (const it of state.auction) (isVendorTrash(it) ? trash : nontrash).push(it);
+  reportTrash(trash);
+
+  // Generate from the AUCTION list (minus trash), not the whole inventory.
+  const sellable = nontrash.filter((i) => linkFor(i));
+  const skipped = nontrash.length - sellable.length;
+  if (!sellable.length) {
+    log(trash.length ? "All priced items are vendor-trash — nothing to auction. Go vendor them!"
+                     : "No auction items have a DB link to generate.");
+    return;
+  }
 
   const textToken = (item) => item.price ? `${item.name} ${item.price}` : `${item.name} pst`;
 
@@ -866,6 +903,7 @@ $("reloadDb").addEventListener("click", async () => {
   await idbDel(DB_META_KEY);
   autoLoadDb({ forceNetwork: true });
 });
+$("cha").addEventListener("change", refreshAuction);   // recompute Vendor column + trash coloring
 $("selAllBtn").addEventListener("click", selectAllInv);
 $("addSelBtn").addEventListener("click", addSelectedToAuction);
 $("removeBtn").addEventListener("click", removeSelectedFromAuction);

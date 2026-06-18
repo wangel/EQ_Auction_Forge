@@ -68,6 +68,10 @@
               <label for="undercut" title="Shave this % off each checked median, rounded to the nearest 5p">Undercut %</label>
               <input type="number" id="undercut" value="0" min="0" max="99">
             </div>
+            <div class="field inline">
+              <label for="cha" title="Your Charisma — sets the NPC vendor buyback estimate (Vendor column). Plat items worth more to a vendor than your price are dropped from the macro.">CHA</label>
+              <input type="number" id="cha" value="75" min="0" max="255">
+            </div>
             <label class="inline" title="Dev only: route /api through dev-proxy.py to dodge CORS while testing">
               <input type="checkbox" id="useProxy"> Use local proxy
             </label>
@@ -81,9 +85,9 @@
           </div>
           <div class="table-wrap">
             <table>
-              <thead><tr><th>Item</th><th>Qty</th><th>Price</th></tr></thead>
+              <thead><tr><th>Item</th><th>Qty</th><th>Price</th><th>Vendor</th></tr></thead>
               <tbody id="aucBody">
-                <tr><td colspan="3" class="empty">Add items from the left.</td></tr>
+                <tr><td colspan="4" class="empty">Add items from the left.</td></tr>
               </tbody>
             </table>
           </div>
