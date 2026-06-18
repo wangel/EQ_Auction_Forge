@@ -386,12 +386,33 @@ function undercutPct() {
 }
 // Round to the nearest 5 plat (so 300p − 2% = 294 posts as 295, not 294).
 function roundTo5(v) { return Math.round(v / 5) * 5; }
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// One /prices/bulk call with a single retry on transient failure (the upstream
+// occasionally resets a connection mid-run). Returns parsed JSON or throws.
+async function fetchBulk(server, itemIds) {
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const resp = await fetch(`${apiBase()}/prices/bulk`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Accept": "application/json" },
+        body: JSON.stringify({ serverName: server, itemIds }),
+      });
+      if (!resp.ok) throw new Error("HTTP " + resp.status);
+      return await resp.json();
+    } catch (e) {
+      if (attempt === 2) throw e;
+      await sleep(500);   // brief backoff, then one retry
+    }
+  }
+}
 
 // Price-check every inventory item that has an id: batch ids <=10 per request,
-// POST /prices/bulk, take the server-computed median plat, and fill the row's
-// price box. The bulk API is id-keyed (names aren't unique), so items with no id
-// are skipped — type those by hand. MVP: median plat only; krono/undercut/recent
-// divergence from the desktop are deliberately not ported yet.
+// POST /prices/bulk, take the server-computed median plat (minus undercut), and
+// fill the row's price box. The bulk API is id-keyed (names aren't unique), so
+// items with no id are skipped — type those by hand. A failed batch is retried
+// once then skipped (not fatal), so one transient error doesn't lose the whole
+// run. Still TODO from the desktop: krono classification, recent-asks divergence.
 async function priceCheckAll() {
   if (!state.db || !state.inventory.length) return;
   const server = ($("server").value || "Frostreaver").trim();
@@ -412,46 +433,54 @@ async function priceCheckAll() {
   log(`Price check: ${ids.length} item(s) on ${server} in ${batches} request(s)` +
       (pct ? `, undercut ${pct}%` : "") + "…");
 
-  let priced = 0, noData = 0, kronoRate = 0;
+  let priced = 0, noData = 0, kronoRate = 0, failed = 0, batchErr = 0;
   try {
     for (let i = 0; i < ids.length; i += BULK_PRICE_LIMIT) {
       const batch = ids.slice(i, i + BULK_PRICE_LIMIT);
-      const resp = await fetch(`${apiBase()}/prices/bulk`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "Accept": "application/json" },
-        body: JSON.stringify({ serverName: server, itemIds: batch }),
-      });
-      if (!resp.ok) throw new Error("HTTP " + resp.status);
-      const data = await resp.json();
-      if (data.kronoRate) kronoRate = data.kronoRate;
-      for (const r of data.items || []) {
-        const rows = rowsById.get(r.itemId);
-        if (!rows) continue;
-        if (r.hasData && r.medianPlatPrice > 0) {
-          const v = pct ? r.medianPlatPrice * (1 - pct / 100) : r.medianPlatPrice;
-          const priceStr = `${Math.max(roundTo5(v), 5)}p`;   // never post 0p
-          for (const it of rows) {
-            it.price = priceStr;
-            if (it._priceInput) it._priceInput.value = priceStr;
+      let data = null;
+      try {
+        data = await fetchBulk(server, batch);
+      } catch (e) {
+        batchErr++; failed += batch.length;
+        log(`  batch ${Math.floor(i / BULK_PRICE_LIMIT) + 1}/${batches} failed (${e.message}) — skipped`);
+      }
+      if (data) {
+        if (data.kronoRate) kronoRate = data.kronoRate;
+        for (const r of data.items || []) {
+          const rows = rowsById.get(r.itemId);
+          if (!rows) continue;
+          if (r.hasData && r.medianPlatPrice > 0) {
+            const v = pct ? r.medianPlatPrice * (1 - pct / 100) : r.medianPlatPrice;
+            const priceStr = `${Math.max(roundTo5(v), 5)}p`;   // never post 0p
+            for (const it of rows) {
+              it.price = priceStr;
+              if (it._priceInput) it._priceInput.value = priceStr;
+            }
+            priced++;
+          } else {
+            noData++;
           }
-          priced++;
-        } else {
-          noData++;
         }
       }
       st.textContent = `checking… ${Math.min(i + BULK_PRICE_LIMIT, ids.length)}/${ids.length}`;
+      await sleep(120);   // gentle pacing between batches
     }
-    st.textContent = `done — ${priced} priced, ${noData} no data`;
+    st.textContent = `done — ${priced} priced, ${noData} no data` + (failed ? `, ${failed} failed` : "");
     log(`Price check complete: ${priced} priced, ${noData} no data` +
+        (failed ? `, ${failed} failed in ${batchErr} batch(es)` : "") +
         (pct ? `, undercut ${pct}%` : "") +
         (kronoRate ? ` (krono rate ~${Math.round(kronoRate)}p)` : "") + ".");
+    if (failed) {
+      if (priced === 0 && noData === 0 && !(($("useProxy") || {}).checked)) {
+        log("  → Every batch failed. Direct calls need CORS (not enabled yet) — " +
+            "on localhost run `python web/dev-proxy.py` and tick 'Use local proxy'.");
+      } else {
+        log("  → Some batches hit a transient API error. Run Price Check All again to fill the rest.");
+      }
+    }
   } catch (e) {
     st.textContent = "failed";
-    log("Price check FAILED: " + (e && e.message ? e.message : e));
-    if (!(($("useProxy") || {}).checked)) {
-      log("  → Direct calls need CORS, which tlp-auctions hasn't enabled yet. " +
-          "On localhost, run `python web/dev-proxy.py` and tick 'Use local proxy'.");
-    }
+    log("Price check error: " + (e && e.message ? e.message : e));
   } finally {
     pc.disabled = false;
   }
