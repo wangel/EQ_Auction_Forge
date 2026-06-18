@@ -18,7 +18,7 @@
 #   best-effort: on Python <3.10 or if not installed, the app falls back to the
 #   default OpenSSL verification (works wherever the OS store already has the
 #   root). The shipped Windows .exe bundles it, so end users need nothing.
-truststore>=0.10
+truststore==0.10.4
 #
 # About tkinter:
 #   tkinter is part of Python's standard library and CANNOT be installed
