@@ -688,7 +688,13 @@ function refreshAuction() {
       input.type = "text";
       input.placeholder = "e.g. 500p";
       input.value = item.price || "";
-      input.addEventListener("input", () => { item.price = input.value.trim(); item.diverge = null; });
+      input.addEventListener("input", () => {
+        item.price = input.value.trim();
+        item.diverge = null;                 // a manual price overrides the recent-asks flag
+        tr.classList.remove("krono", "vendor", "diverge");
+        const t = rowTag(item);
+        if (t) tr.classList.add(t);          // live recolor (krono/vendor) as you type
+      });
       // editing the price shouldn't toggle the row's selection
       input.addEventListener("click", (e) => e.stopPropagation());
       item._priceInput = input;
