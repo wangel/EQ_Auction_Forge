@@ -34,6 +34,13 @@
         <span class="hint" id="invStatus">not loaded</span>
       </div>
       <div class="field">
+        <label for="lookupInput">Recent postings lookup <span class="hint">— check any item's market, even ones you don't have</span></label>
+        <div class="row">
+          <input type="text" id="lookupInput" placeholder="item name…">
+          <button id="lookupBtn" type="button">Recent Postings</button>
+        </div>
+      </div>
+      <div class="field">
         <label class="inline" title="Dev only: route /api through dev-proxy.py to dodge CORS while testing. This goes away once the price API enables CORS.">
           <input type="checkbox" id="useProxy"> Use local proxy <span class="hint">(dev/debug — temporary)</span>
         </label>
@@ -87,6 +94,7 @@
           <div class="row">
             <button id="pcSelBtn" type="button" disabled title="Price-check the selected auction row(s)">Price Check</button>
             <button id="pcBtn" type="button" disabled>PC All</button>
+            <button id="rpBtn" type="button" disabled title="Recent postings for the selected auction item">Recent Postings</button>
             <button id="removeBtn" type="button" disabled>Remove</button>
             <button id="clearBtn" type="button" disabled>Clear</button>
           </div>
@@ -160,6 +168,13 @@
       <pre id="log"></pre>
     </section>
   </main>
+
+  <div id="modal" class="modal-backdrop" hidden>
+    <div class="modal">
+      <div class="modal-head"><strong id="modalTitle"></strong><button id="modalClose" type="button" title="Close">&times;</button></div>
+      <div id="modalBody" class="modal-body"></div>
+    </div>
+  </div>
 
   <script src="app.js"></script>
 </body>

@@ -39,6 +39,7 @@ const state = {
   aucSel: new Set(), // selected auction row indices
   invSort: { col: null, desc: false },   // inventory column sort
   aucSort: { col: null, desc: false },   // auction column sort
+  kronoRate: 0,      // last krono->plat rate seen (for the Recent Postings hint)
   iniText: null,     // optional existing INI loaded for the Download path
 };
 
@@ -548,6 +549,7 @@ async function priceItems(items) {
           for (const it of rows) {
             it.price = res.priceStr;
             it.diverge = res.diverge;
+            it._lastMedian = Math.round(r.medianPlatPrice);   // ref for the Recent Postings hint
             if (it._priceInput) it._priceInput.value = res.priceStr;
           }
           priced++;
@@ -582,6 +584,7 @@ async function priceItems(items) {
   } finally {
     btns.forEach((b) => b && (b.disabled = false));
   }
+  state.kronoRate = rate || state.kronoRate;   // remember for the Recent Postings hint
   refreshAuction();   // rebuild rows so prices/flags (and coloring) reflect the check
 }
 
@@ -593,6 +596,142 @@ async function priceCheckAll() {
 async function priceCheckSelected() {
   if (!state.aucSel.size) { log("Select auction row(s) to price-check, or use PC All."); return; }
   await priceItems([...state.aucSel].map((i) => state.auction[i]));
+}
+
+// ===================================================================
+// Recent Postings (/api/sales viewer) + modal
+// ===================================================================
+
+// ISO UTC -> "MM/DD hh:mmAM (Nm/h/d ago)". Port of format_sale_age.
+function formatSaleAge(iso) {
+  const dt = new Date(iso);
+  if (isNaN(dt.getTime())) return iso || "?";
+  const secs = Math.floor((Date.now() - dt.getTime()) / 1000);
+  const ago = secs < 3600 ? `${Math.max(Math.floor(secs / 60), 0)}m ago`
+    : secs < 86400 ? `${Math.floor(secs / 3600)}h ago`
+      : `${Math.floor(secs / 86400)}d ago`;
+  const mo = String(dt.getMonth() + 1).padStart(2, "0"), da = String(dt.getDate()).padStart(2, "0");
+  let h = dt.getHours(); const ap = h < 12 ? "AM" : "PM"; h = h % 12 || 12;
+  const mi = String(dt.getMinutes()).padStart(2, "0");
+  return `${mo}/${da} ${String(h).padStart(2, "0")}:${mi}${ap} (${ago})`;
+}
+// One posting is in plat OR krono. Port of format_posting_price.
+function formatPostingPrice(plat, krono) {
+  if (krono && krono > 0) return `${krono}kr`;
+  if (plat && plat > 0) return `${Math.trunc(plat)}p`;
+  return "—";
+}
+
+// ----- generic modal (web equivalent of the desktop's Toplevel windows) -----
+function openModal(title, bodyNode) {
+  $("modalTitle").textContent = title;
+  const body = $("modalBody"); body.innerHTML = ""; body.appendChild(bodyNode);
+  $("modal").hidden = false;
+}
+function closeModal() { $("modal").hidden = true; $("modalBody").innerHTML = ""; }
+
+// Set an auction item's price to the recent median (no undercut — match the live
+// market, don't undercut it). Port of _use_recent_median (auction-list case).
+function useRecentMedian(item, price) {
+  item.price = price;
+  item.diverge = null;
+  if (item._priceInput) item._priceInput.value = price;
+  refreshAuction();
+  log(`  ${item.name}: priced at recent median ${price}`);
+}
+
+// Recent postings for ONE item by name. `item` is the auction row when we own it
+// (enables the divergence hint vs the check median + a Set-price button); null
+// for a DB lookup of something you don't have. Port of _show_recent_postings.
+async function showRecentPostings(name, item = null) {
+  const server = ($("server").value || "Frostreaver").trim();
+  log(`Fetching recent postings: ${name}…`);
+  let sales;
+  try { sales = await fetchRecentSales(name, server); }
+  catch (e) { log(`  recent postings failed: ${e.message}`); alert("Couldn't fetch postings: " + e.message); return; }
+  if (!sales.length) { log(`  ${name}: no recent postings on ${server}`); alert(`No recent postings found for:\n${name}`); return; }
+
+  const rate = state.kronoRate || (await fetchKronoRate(server)) || DEFAULT_KRONO_RATE;
+  const wrap = document.createElement("div");
+  const sub = document.createElement("div");
+  sub.className = "hint"; sub.style.marginBottom = "8px";
+  sub.textContent = `Last ${sales.length} postings on ${server} (newest first)`;
+  wrap.appendChild(sub);
+
+  // Recent-asks divergence hint vs the last check median (item._lastMedian).
+  const mk = recentMarket(sales, rate);
+  const ref = item ? item._lastMedian : undefined;
+  if (mk) {
+    const shown = mk.isKrono
+      ? `${mk.priceStr} (≈${Math.round(mk.effMed).toLocaleString()}p @ ${Math.round(rate).toLocaleString()}/kr)`
+      : mk.priceStr;
+    const hint = document.createElement("p");
+    hint.className = "hint-line";
+    hint.style.fontFamily = '"Segoe UI Emoji", Consolas, monospace';
+    if (!ref) { hint.textContent = `Recent WTS median ${shown} (over ${mk.n} asks) — price-check this item to compare vs the live median.`; hint.style.color = "var(--fg)"; }
+    else {
+      const pct = (mk.effMed - ref) / ref * 100;
+      if (pct <= -15) { hint.textContent = `📉 Recent WTS median ${shown} — ~${Math.abs(Math.round(pct))}% UNDER your ${ref.toLocaleString()}p check median. Median's lagging; consider repricing.`; hint.style.color = "#ff6666"; }
+      else if (pct >= 15) { hint.textContent = `📈 Recent WTS median ${shown} — ~${Math.round(pct)}% ABOVE your ${ref.toLocaleString()}p check median. Asks are climbing.`; hint.style.color = "#00ff66"; }
+      else { hint.textContent = `≈ Recent WTS median ${shown} — in line with your ${ref.toLocaleString()}p check median.`; hint.style.color = "var(--muted)"; }
+    }
+    wrap.appendChild(hint);
+    if (item) {   // only owned items can be repriced from here
+      const setBtn = document.createElement("button");
+      setBtn.textContent = `Set price → ${mk.priceStr}  (match recent median)`;
+      setBtn.style.marginBottom = "10px";
+      setBtn.addEventListener("click", () => { useRecentMedian(item, mk.priceStr); closeModal(); });
+      wrap.appendChild(setBtn);
+    }
+  }
+
+  const pre = document.createElement("div");
+  pre.className = "postings";
+  pre.textContent = sales.map((s) => {
+    const when = formatSaleAge(s.datetime).padEnd(22);
+    const kind = s.transactionType ? "WTB" : "WTS";
+    const price = formatPostingPrice(s.platPrice, s.kronoPrice).padStart(9);
+    return `${when} ${kind}  ${price}  ${s.auctioneer || "?"}`;
+  }).join("\n");
+  wrap.appendChild(pre);
+
+  openModal(`Recent Postings — ${name}`, wrap);
+}
+
+// Auction-pane button: recent postings for the single selected auction row.
+function recentPostingsSelected() {
+  if (state.aucSel.size !== 1) { log("Select exactly one auction item, then Recent Postings."); return; }
+  const it = state.auction[[...state.aucSel][0]];
+  showRecentPostings(it.name, it);
+}
+
+// DB lookup: recent postings for ANY item by name (owned or not). Exact match
+// first, else a contains-search; multiple matches open a picker.
+function recentPostingsLookup() {
+  const q = $("lookupInput").value.trim();
+  if (!q) return;
+  if (!state.db) { log("Item DB not loaded yet."); return; }
+  const lc = q.toLowerCase();
+  let exact = null; const partial = [];
+  for (const n of state.db.byName.keys()) {
+    const nl = n.toLowerCase();
+    if (nl === lc) { exact = n; break; }
+    if (nl.includes(lc) && partial.length < 60) partial.push(n);
+  }
+  if (exact) { showRecentPostings(exact); return; }
+  if (!partial.length) { log(`No DB item matches "${q}".`); alert(`No item in the database matches "${q}".`); return; }
+  if (partial.length === 1) { showRecentPostings(partial[0]); return; }
+  partial.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+  const list = document.createElement("div");
+  list.className = "picker";
+  for (const n of partial) {
+    const row = document.createElement("div");
+    row.className = "picker-row";
+    row.textContent = n;
+    row.addEventListener("click", () => showRecentPostings(n));   // replaces modal contents
+    list.appendChild(row);
+  }
+  openModal(`${partial.length} matches for "${q}" — pick one`, list);
 }
 
 // =====================================================================
@@ -778,6 +917,7 @@ function refreshAuction() {
   const has = state.auction.length > 0;
   $("pcBtn").disabled = !has;
   $("pcSelBtn").disabled = !has;
+  $("rpBtn").disabled = !has;
   $("removeBtn").disabled = !has;
   $("clearBtn").disabled = !has;
   $("genBtn").disabled = !has;
@@ -998,7 +1138,13 @@ $("addSelBtn").addEventListener("click", addSelectedToAuction);
 $("removeBtn").addEventListener("click", removeSelectedFromAuction);
 $("clearBtn").addEventListener("click", clearAuction);
 $("pcSelBtn").addEventListener("click", priceCheckSelected);
+$("rpBtn").addEventListener("click", recentPostingsSelected);
 $("pcBtn").addEventListener("click", priceCheckAll);
+$("lookupBtn").addEventListener("click", recentPostingsLookup);
+$("lookupInput").addEventListener("keydown", (e) => { if (e.key === "Enter") recentPostingsLookup(); });
+$("modalClose").addEventListener("click", closeModal);
+$("modal").addEventListener("click", (e) => { if (e.target === $("modal")) closeModal(); });   // backdrop click
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("modal").hidden) closeModal(); });
 $("genBtn").addEventListener("click", generate);
 $("writeBtn").addEventListener("click", writeInPlace);
 $("downloadBtn").addEventListener("click", downloadIni);
