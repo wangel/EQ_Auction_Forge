@@ -47,6 +47,10 @@
           <label for="server">Server</label>
           <input type="text" id="server" value="Frostreaver">
         </div>
+        <div class="field inline">
+          <label for="undercut" title="Shave this % off each checked median, rounded to the nearest 5p">Undercut %</label>
+          <input type="number" id="undercut" value="0" min="0" max="99">
+        </div>
         <button id="pcBtn" type="button" disabled>Price Check All</button>
         <label class="inline" title="Dev only: route /api through dev-proxy.py to dodge CORS while testing">
           <input type="checkbox" id="useProxy"> Use local proxy

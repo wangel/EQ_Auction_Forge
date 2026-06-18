@@ -379,6 +379,14 @@ function apiBase() {
   return cb && cb.checked ? "/api" : API_HOST;
 }
 
+// Undercut % from the box, clamped to [0,100); blank/invalid = 0 (desktop parity).
+function undercutPct() {
+  const n = parseFloat(($("undercut") || {}).value);
+  return Number.isFinite(n) && n > 0 && n < 100 ? n : 0;
+}
+// Round to the nearest 5 plat (so 300p − 2% = 294 posts as 295, not 294).
+function roundTo5(v) { return Math.round(v / 5) * 5; }
+
 // Price-check every inventory item that has an id: batch ids <=10 per request,
 // POST /prices/bulk, take the server-computed median plat, and fill the row's
 // price box. The bulk API is id-keyed (names aren't unique), so items with no id
@@ -397,10 +405,12 @@ async function priceCheckAll() {
   const ids = [...rowsById.keys()];
   if (!ids.length) { log("Price check: no items have an id to look up (type prices by hand)."); return; }
 
+  const pct = undercutPct();
   const pc = $("pcBtn"), st = $("pcStatus");
   pc.disabled = true; st.textContent = "checking…";
   const batches = Math.ceil(ids.length / BULK_PRICE_LIMIT);
-  log(`Price check: ${ids.length} item(s) on ${server} in ${batches} request(s)…`);
+  log(`Price check: ${ids.length} item(s) on ${server} in ${batches} request(s)` +
+      (pct ? `, undercut ${pct}%` : "") + "…");
 
   let priced = 0, noData = 0, kronoRate = 0;
   try {
@@ -418,7 +428,8 @@ async function priceCheckAll() {
         const rows = rowsById.get(r.itemId);
         if (!rows) continue;
         if (r.hasData && r.medianPlatPrice > 0) {
-          const priceStr = `${Math.round(r.medianPlatPrice)}p`;
+          const v = pct ? r.medianPlatPrice * (1 - pct / 100) : r.medianPlatPrice;
+          const priceStr = `${Math.max(roundTo5(v), 5)}p`;   // never post 0p
           for (const it of rows) {
             it.price = priceStr;
             if (it._priceInput) it._priceInput.value = priceStr;
@@ -432,6 +443,7 @@ async function priceCheckAll() {
     }
     st.textContent = `done — ${priced} priced, ${noData} no data`;
     log(`Price check complete: ${priced} priced, ${noData} no data` +
+        (pct ? `, undercut ${pct}%` : "") +
         (kronoRate ? ` (krono rate ~${Math.round(kronoRate)}p)` : "") + ".");
   } catch (e) {
     st.textContent = "failed";
