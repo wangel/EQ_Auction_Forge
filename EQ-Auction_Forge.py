@@ -416,7 +416,7 @@ def apply_runtime_settings(settings):
     EXCLUDED_ITEMS = set(_DEFAULT_EXCLUDED) | user_ex
 
 
-APP_VERSION = "1.4.4"
+APP_VERSION = "1.4.5"
 
 # Identify ourselves to the TLP Auctions API. Their operator asked tool authors
 # to send a custom User-Agent so legit tool traffic isn't mistaken for spam and
@@ -631,7 +631,7 @@ class AuctionBuilder:
         self.krono_synced_at = self.settings.get('krono_synced_at')
 
         self.root = tk.Tk()
-        self.root.title("EQ Auction Forge v1.4.3 — by wangel")
+        self.root.title(f"EQ Auction Forge v{APP_VERSION} — by wangel")
         self.root.configure(bg='#1a1a1a')
         # Open wide enough for the right-side price controls + columns, centered,
         # with a sane minimum so it can't be squished into uselessness. Resizes
@@ -694,6 +694,18 @@ class AuctionBuilder:
                   foreground='#888888').pack(side='left', padx=12)
         self._update_krono_label()  # seed from persisted rate/timestamp
 
+        # Update nudge — packed early on the LEFT so it has pack priority and is
+        # never clipped at narrow window widths (it was previously the last
+        # right-packed widget, so it was the first to vanish when the toolbar ran
+        # out of room — the one notice we most want seen). Stays blank/zero-width
+        # unless a newer release exists. Click it to open the releases page.
+        self.update_var = tk.StringVar(value="")
+        self._update_lbl = ttk.Label(top, textvariable=self.update_var,
+                                     foreground='#FFA500',
+                                     font=('Consolas', 9, 'bold'), cursor='hand2')
+        self._update_lbl.pack(side='left', padx=8)
+        self._update_lbl.bind('<Button-1>', lambda e: webbrowser.open(RELEASES_URL))
+
         self.db_count_var = tk.StringVar()
         ttk.Label(top, textvariable=self.db_count_var, foreground='#00ff00').pack(side='right')
         ttk.Button(top, text="Help", command=self._show_help).pack(side='right', padx=5)
@@ -705,15 +717,6 @@ class AuctionBuilder:
                                  font=('Consolas', 9, 'underline'), cursor='hand2')
         feedback_lbl.pack(side='right', padx=5)
         feedback_lbl.bind('<Button-1>', lambda e: webbrowser.open(ISSUES_URL))
-
-        # Update nudge — stays blank/invisible unless a newer release exists.
-        # Click it to open the releases page.
-        self.update_var = tk.StringVar(value="")
-        self._update_lbl = ttk.Label(top, textvariable=self.update_var,
-                                     foreground='#FFA500',
-                                     font=('Consolas', 9, 'bold'), cursor='hand2')
-        self._update_lbl.pack(side='right', padx=8)
-        self._update_lbl.bind('<Button-1>', lambda e: webbrowser.open(RELEASES_URL))
 
         # === Paned ===
         paned = ttk.PanedWindow(self.root, orient='horizontal')
@@ -997,7 +1000,7 @@ class AuctionBuilder:
             font=('Consolas', 9), wrap='word', padx=10, pady=10)
         txt.pack(fill='both', expand=True, padx=10, pady=10)
 
-        help_text = """EQ Auction Forge v1.4.3
+        help_text = f"""EQ Auction Forge v{APP_VERSION}
 by wangel
 
 HOW TO USE (auction macros):
@@ -1052,8 +1055,9 @@ LOG MONITOR (beta) — live trade radar:
   Watchlist. Bright = loud (beep + popup), muted =
   quiet (shows in the feed only).
 - Click a row to copy "/tell <name>"; click the "+"
-  for the raw log line; right-click a spammer to
-  silence them.
+  for the raw log line. Right-click a row to silence
+  a spammer — or, on a BUY lead, to drop that item
+  from your Watchlist once you've bought it.
 - "Aliases" maps slang to items (CoF, fbss, fungi…).
 - "Watchlist" = items you want to BUY; a keyword like
   "Nathsar" catches the whole set.
@@ -1331,10 +1335,27 @@ Pricing: tlp-auctions.com"""
         menu.add_command(label=f"Copy  /tell {who}",
                          command=lambda: (self.lm_feed.selection_set(iid),
                                           self._lm_copy_tell()))
+        # On a BUY lead the 'item' column is the exact watchlist entry that
+        # matched (see logmon._watchlist_hits), so offer to drop it straight from
+        # the feed — handy once you've bought the thing. Only shown when it's
+        # still on the list; SELL rows show inventory items, not watchlist wants.
+        item = vals[4] if len(vals) > 4 else ''
+        if vals[2] == 'BUY' and item and item in self._load_watchlist():
+            menu.add_separator()
+            menu.add_command(label=f"Remove '{item}' from watchlist",
+                             command=lambda: self._lm_remove_from_watchlist(item))
         try:
             menu.tk_popup(event.x_root, event.y_root)
         finally:
             menu.grab_release()
+
+    def _lm_remove_from_watchlist(self, item):
+        """Drop an item from the watchlist via the feed right-click menu. Mirrors
+        the editor's exact-match removal and live-applies to the running matcher
+        (and the editor, if it's open); works fine with the editor closed."""
+        self._watchlist = [w for w in self._load_watchlist() if w != item]
+        self._save_and_apply_watchlist()
+        self.lm_status_var.set(f"Removed from watchlist: {item}")
 
     # ----- Settings dialog ----------------------------------------------------
     def _open_settings(self):
@@ -1751,7 +1772,10 @@ Pricing: tlp-auctions.com"""
         try:
             logmon.save_watchlist(self._watchlist_path(), self._load_watchlist())
         except OSError as e:
-            self.watch_status_var.set(f"Could not save: {e}")
+            # The feed right-click can remove items with the editor closed, so
+            # watch_status_var may not exist yet — only set it when it does.
+            if getattr(self, 'watch_status_var', None) is not None:
+                self.watch_status_var.set(f"Could not save: {e}")
         if self._matcher is not None:
             self._matcher.set_watchlist(self._load_watchlist())
         self._watch_repopulate()
@@ -3082,9 +3106,18 @@ Pricing: tlp-auctions.com"""
         threading.Thread(target=work, daemon=True).start()
 
     def _show_update(self, latest):
+        # Passive reminder: the orange clickable label stays in the toolbar.
         self.update_var.set(f"⬆ v{latest} available")
         self._log(f"Update available: v{latest} (you have v{APP_VERSION}) — "
                   f"{RELEASES_URL}")
+        # Active nudge: one-time prompt at startup so the update isn't missed.
+        # Declining leaves the label in place to click later.
+        if messagebox.askyesno(
+                "Update available",
+                f"Version {latest} is now available "
+                f"(you have v{APP_VERSION}).\n\n"
+                "Do you want to open the download page?"):
+            webbrowser.open(RELEASES_URL)
 
     def _refresh_krono_rate(self):
         """Pull the live krono->plat rate (tlp-auctions 1-day avg) in the
@@ -3283,7 +3316,7 @@ Pricing: tlp-auctions.com"""
 
 
 def main():
-    parser = argparse.ArgumentParser(description="EQ Auction Forge v1.4.3 - wangel")
+    parser = argparse.ArgumentParser(description=f"EQ Auction Forge v{APP_VERSION} - wangel")
     parser.add_argument("--db", default=ITEMS_DB)
     args = parser.parse_args()
 

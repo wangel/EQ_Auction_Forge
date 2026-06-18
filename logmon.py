@@ -178,6 +178,58 @@ def confidence(total, coverage, best_single, item_cov, exact_anchor):
 
 
 # ---------------------------------------------------------------------------
+# Watchlist phrase matching (exact, not fuzzy)
+# ---------------------------------------------------------------------------
+# The fuzzy IDF matcher above is right for WTB leads — buyers abbreviate and
+# typo a single item. It is WRONG for the watchlist: sellers link real item
+# names from inventory (so no typo tolerance is needed) and list MANY items per
+# line, which let the bag-of-words scorer assemble a phantom match from words
+# belonging to two different items (e.g. watchlist "Resplendent Gloves" firing
+# on "...Resplendent Robe 5000, Gloves of Stability..."). So watchlist matching
+# is exact PHRASE containment: the watchlist item's words must appear as a
+# contiguous run WITHIN a single listed item. Commas and price tokens are item
+# boundaries; stopwords ('of', 'the', ...) are transparent.
+
+_PHRASE_TOK_RE = re.compile(r"[a-z0-9'`]+|,")
+
+
+def phrase_token_groups(text):
+    """Split an auction segment into one token list per listed item, so a phrase
+    can't span items. A comma or a price-like token (300, 5000) ends the current
+    item; stopwords and sub-2-char tokens are dropped (transparent)."""
+    groups, cur = [], []
+    for m in _PHRASE_TOK_RE.finditer(text.lower()):
+        tok = m.group(0)
+        if tok == ',' or PRICEY_RE.match(tok):   # item boundary
+            if cur:
+                groups.append(cur)
+                cur = []
+            continue
+        if tok in STOPWORDS or len(tok) < 2:
+            continue
+        cur.append(tok)
+    if cur:
+        groups.append(cur)
+    return groups
+
+
+def phrase_match(query_name, groups):
+    """True if query_name's words appear as a contiguous run inside any single
+    item group. A one-word watchlist entry ('Deepwater') matches any item
+    containing that word; a multi-word entry ('Deepwater Helm') matches only
+    when those words are adjacent in one posted item."""
+    q = tokenize(query_name)
+    if not q:
+        return False
+    span = len(q)
+    for g in groups:
+        for i in range(len(g) - span + 1):
+            if g[i:i + span] == q:
+                return True
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Auction-line parsing + buy-segment extraction
 # ---------------------------------------------------------------------------
 
@@ -366,18 +418,33 @@ class Matcher:
                 best = (tot, conf, name)
         return (best[1], round(best[0], 1), best[2]) if best else None
 
+    def _watchlist_hits(self, seg):
+        """Watchlist leads in a WTS segment via exact phrase containment (see
+        phrase_match). Returns every matching watchlist item (a seller may list
+        two things you want in one line), each as ('HIGH', score, item) with the
+        item's idf sum as the score so rarer wants rank first."""
+        if not seg or not self.watchlist:
+            return []
+        groups = phrase_token_groups(seg)
+        hits = []
+        for name in self.watchlist:
+            if phrase_match(name, groups):
+                scr = round(sum(self.idf.get(t, 0.0) for t in tokenize(name)), 1)
+                hits.append(('HIGH', scr, name))
+        return hits
+
     def match_line(self, msg):
         """Return a list of leads for a line: each is (kind, tier, score, item).
           kind 'SELL' = poster WTBs an item I OWN  (I can sell to them)
           kind 'BUY'  = poster WTSs an item on my WATCHLIST  (I can buy from them)
-        Usually 0 or 1; a mixed line can yield both."""
+        SELL is fuzzy (buyers abbreviate); BUY is exact phrase (sellers link real
+        names). A mixed line can yield both, and a WTS can yield several BUYs."""
         out = []
         sell = self._best(buy_segments(msg), self.candidates)   # their WTB vs my inv
         if sell:
             out.append(('SELL',) + sell)
-        buy = self._best(sell_segments(msg), self.watchlist)    # their WTS vs my wishlist
-        if buy:
-            out.append(('BUY',) + buy)
+        for hit in self._watchlist_hits(sell_segments(msg)):    # their WTS vs my wishlist
+            out.append(('BUY',) + hit)
         return out
 
 
