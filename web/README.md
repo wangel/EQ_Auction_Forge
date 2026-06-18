@@ -20,8 +20,11 @@ No build step, no Node, no npm. Two ways:
 
 ## How to test
 
-1. Pick `items.txt.gz` (from the repo root) — it's decompressed and parsed in the
-   browser via the native `DecompressionStream`.
+1. The item DB **auto-loads** when served: it fetches `../items.txt.gz` (single
+   source of truth, not duplicated into `web/`), decompresses it with the native
+   `DecompressionStream`, and caches it in IndexedDB so it's a one-time download
+   (the **↻ Reload DB** button busts the cache). Under `file://` fetch is blocked,
+   so pick `items.txt.gz` manually instead.
 2. Pick an EQ `/outputfile inventory` dump.
 3. Type prices for a few items.
 4. **Generate** — the `[Socials]` entries appear (the DC2 link delimiter is shown
@@ -40,10 +43,20 @@ other sections untouched).
 
 ## Deliberately NOT in the PoC
 
-- **Pricing** (TLP-Auctions API) — needs the CORS whitelist + a browser-valid
-  cert from the API owner; type prices by hand for now.
+- **Pricing** (TLP-Auctions API) — the base is `https://tlp-auctions.com/api` and
+  its cert is valid, so the **only** remaining blocker is **CORS**: the server
+  must send `Access-Control-Allow-Origin` for the page's origin and answer the
+  preflight `OPTIONS` (the pricing POST is `Content-Type: application/json`).
+  Type prices by hand until that's enabled.
 - Vendor-trash filtering, the link/text threshold split, krono handling, the
   live krono rate, Recent Postings, the log monitor.
+
+## Diagnostics
+
+`probe.html` hits the price API from the browser (POST bulk, GET sales, bare GET)
+so you can see exactly whether it's reachable — green `HTTP 200` means CORS is
+open and pricing can be wired in; a `CORS policy` error in DevTools means the
+server still needs the headers above.
 
 ## Notes / known limits
 
