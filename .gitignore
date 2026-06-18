@@ -31,9 +31,6 @@ items.txt
 *.ini
 *.bak
 *-Inventory.txt
-# Local log-monitor calibration data (inventory dumps + eqlog captures)
-Cletus_Logs/
-eqlog_*.txt
 
 # Local-only dev/adoption tooling (not shipped)
 download_stats.py
