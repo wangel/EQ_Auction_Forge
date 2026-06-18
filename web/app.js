@@ -497,12 +497,11 @@ async function resolvePrice(name, r, rate, pct, server) {
 // swap / divergence flag for >=1000p items via recent asks). id-keyed, so items
 // with no id are skipped. A failed batch is retried once then skipped (not
 // fatal). Port of _price_check_all + _resolve_price. (Row coloring TODO.)
-async function priceCheckAll() {
-  if (!state.auction.length) return;
+async function priceItems(items) {
   const server = ($("server").value || "Frostreaver").trim();
 
   const rowsById = new Map();   // itemId -> [auction rows sharing that id]
-  for (const item of state.auction) {
+  for (const item of items) {
     if (!item.id) continue;
     if (!rowsById.has(item.id)) rowsById.set(item.id, []);
     rowsById.get(item.id).push(item);
@@ -511,8 +510,8 @@ async function priceCheckAll() {
   if (!ids.length) { log("Price check: no auction items have an id to look up (type prices by hand)."); return; }
 
   const pct = undercutPct();
-  const pc = $("pcBtn"), st = $("pcStatus");
-  pc.disabled = true; st.textContent = "checking…";
+  const btns = [$("pcBtn"), $("pcSelBtn")], st = $("pcStatus");
+  btns.forEach((b) => b && (b.disabled = true)); st.textContent = "checking…";
   const batches = Math.ceil(ids.length / BULK_PRICE_LIMIT);
   log(`Price check: ${ids.length} item(s) on ${server} in ${batches} request(s)` +
       (pct ? `, undercut ${pct}%` : "") + "…");
@@ -541,6 +540,7 @@ async function priceCheckAll() {
           const res = await resolvePrice(rows[0].name, r, rate || DEFAULT_KRONO_RATE, pct, server);
           for (const it of rows) {
             it.price = res.priceStr;
+            it.diverge = res.diverge;
             if (it._priceInput) it._priceInput.value = res.priceStr;
           }
           priced++;
@@ -573,8 +573,19 @@ async function priceCheckAll() {
     st.textContent = "failed";
     log("Price check error: " + (e && e.message ? e.message : e));
   } finally {
-    pc.disabled = false;
+    btns.forEach((b) => b && (b.disabled = false));
   }
+  refreshAuction();   // rebuild rows so prices/flags (and coloring) reflect the check
+}
+
+async function priceCheckAll() {
+  if (!state.auction.length) return;
+  await priceItems(state.auction);
+}
+
+async function priceCheckSelected() {
+  if (!state.aucSel.size) { log("Select auction row(s) to price-check, or use PC All."); return; }
+  await priceItems([...state.aucSel].map((i) => state.auction[i]));
 }
 
 // =====================================================================
@@ -663,7 +674,7 @@ function refreshAuction() {
       input.type = "text";
       input.placeholder = "e.g. 500p";
       input.value = item.price || "";
-      input.addEventListener("input", () => { item.price = input.value.trim(); });
+      input.addEventListener("input", () => { item.price = input.value.trim(); item.diverge = null; });
       // editing the price shouldn't toggle the row's selection
       input.addEventListener("click", (e) => e.stopPropagation());
       item._priceInput = input;
@@ -675,6 +686,7 @@ function refreshAuction() {
   $("aucCount").textContent = `${state.auction.length} items`;
   const has = state.auction.length > 0;
   $("pcBtn").disabled = !has;
+  $("pcSelBtn").disabled = !has;
   $("removeBtn").disabled = !has;
   $("clearBtn").disabled = !has;
   $("genBtn").disabled = !has;
@@ -806,6 +818,7 @@ $("selAllBtn").addEventListener("click", selectAllInv);
 $("addSelBtn").addEventListener("click", addSelectedToAuction);
 $("removeBtn").addEventListener("click", removeSelectedFromAuction);
 $("clearBtn").addEventListener("click", clearAuction);
+$("pcSelBtn").addEventListener("click", priceCheckSelected);
 $("pcBtn").addEventListener("click", priceCheckAll);
 $("genBtn").addEventListener("click", generate);
 $("writeBtn").addEventListener("click", writeInPlace);
