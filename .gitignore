@@ -10,6 +10,8 @@ build/
 *.spec
 release_stage/
 EQ_Auction_Forge_v*_Windows.zip
+EQ_Auction_Forge_v*_Windows/
+build_*.log
 
 # Nuitka build output
 nuitka_standalone/
