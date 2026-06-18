@@ -71,7 +71,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         req = urllib.request.Request(url, data=body, method=method)
         req.add_header("Content-Type", self.headers.get("Content-Type", "application/json"))
         req.add_header("Accept", "application/json")
-        req.add_header("User-Agent", "EQ-Auction_Forge dev-proxy")
+        # Mirror the desktop app's _API_HEADERS UA so test traffic is identifiable
+        # to the API owner. (A browser can't set this itself — the real webapp will
+        # be recognized by Origin instead, since UA is a forbidden fetch header.)
+        req.add_header("User-Agent",
+                       "EQ-Auction_Forge/1.4.5 (+https://github.com/wangel/EQ_Auction_Forge)")
         try:
             with urllib.request.urlopen(req, timeout=15, context=_ctx) as r:
                 data, status = r.read(), r.status
