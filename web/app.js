@@ -334,7 +334,7 @@ async function autoLoadDb({ forceNetwork = false } = {}) {
   } catch (err) {
     $("dbStatus").textContent = "auto-load failed — pick the file manually below";
     log("DB auto-load failed (" + (err && err.message ? err.message : err) +
-        "). Under file:// fetch is blocked — serve via localhost, or use the picker.");
+        "). Under file:// fetch is blocked — serve it (e.g. `python web/dev-proxy.py`).");
   }
 }
 
@@ -520,22 +520,6 @@ function downloadIni() {
 
 // ----- input handlers (browser only) -----
 if (typeof document !== "undefined") {
-$("dbFile").addEventListener("change", async (e) => {
-  const file = e.target.files[0];
-  if (!file) return;
-  $("dbStatus").textContent = "decompressing…";
-  try {
-    const text = await gunzipToText(await file.arrayBuffer());
-    state.db = parseItemDb(text);
-    $("dbStatus").textContent = `${state.db.byName.size} items loaded`;
-    log(`Item DB: ${state.db.byName.size} names, ${state.db.byId.size} by id.`);
-    maybeBuildTable();
-  } catch (err) {
-    $("dbStatus").textContent = "failed";
-    log("DB load failed: " + (err && err.message ? err.message : err));
-  }
-});
-
 $("invFile").addEventListener("change", async (e) => {
   const file = e.target.files[0];
   if (!file) return;

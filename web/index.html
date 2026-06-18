@@ -21,13 +21,12 @@
     <section class="card">
       <h2>1. Load files</h2>
       <div class="field">
-        <label for="dbFile">Item database (<code>items.txt.gz</code>)</label>
-        <span class="hint">auto-loads when served (localhost/Pages); pick manually under <code>file://</code></span>
+        <label>Item database</label>
+        <span class="hint">bundled with the app and loaded automatically — everyone uses the same verified data, so links always generate correctly</span>
         <div class="row">
-          <input type="file" id="dbFile" accept=".gz">
-          <button id="reloadDb" type="button" title="Clear cache and re-fetch the DB">↻ Reload DB</button>
+          <span class="hint" id="dbStatus">loading…</span>
+          <button id="reloadDb" type="button" title="Clear the local cache and re-fetch the latest bundled DB">↻ Reload DB</button>
         </div>
-        <span class="hint" id="dbStatus">not loaded</span>
       </div>
       <div class="field">
         <label for="invFile">Inventory dump (<code>/outputfile inventory</code>)</label>
