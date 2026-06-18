@@ -134,7 +134,10 @@ SERVER = "Frostreaver"
 # TLPs (or EQ Legends) here when they launch.
 SERVERS = ["Frostreaver"]
 _config = {"server": "Frostreaver"}
-API_BASE = "https://api.tlp-auctions.com"
+# Endpoints hang off /api (e.g. {API_BASE}/api/prices/bulk). Use the apex host,
+# NOT the api. subdomain — the TLS cert covers tlp-auctions.com but its SAN does
+# NOT include api.tlp-auctions.com, so the subdomain fails hostname verification.
+API_BASE = "https://tlp-auctions.com"
 
 # EQ socials layout: 10 pages, 12 buttons per page.
 BUTTONS_PER_PAGE = 12
@@ -158,10 +161,11 @@ INI_BLOCKLIST = {
 EQ_CHAR_SECTIONS = ('[socials]', '[hot buttons]', '[key mapping]',
                     '[keymapping]', '[uisettings]', '[chatchannels]')
 
-# SSL context — their API cert doesn't match the hostname
+# SSL context for API calls. Verification is ON: the apex host tlp-auctions.com
+# has a valid cert (Amazon-issued), so we no longer disable it. The old
+# CERT_NONE workaround only existed to tolerate the api.-subdomain hostname
+# mismatch, which the corrected API_BASE above removes.
 _ssl_ctx = ssl.create_default_context()
-_ssl_ctx.check_hostname = False
-_ssl_ctx.verify_mode = ssl.CERT_NONE
 
 
 def load_item_database(gz_path):
