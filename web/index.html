@@ -34,13 +34,6 @@
         <span class="hint" id="invStatus">not loaded</span>
       </div>
       <div class="field">
-        <label for="lookupInput">Recent postings lookup <span class="hint">— check any item's market, even ones you don't have</span></label>
-        <div class="row">
-          <input type="text" id="lookupInput" placeholder="item name…">
-          <button id="lookupBtn" type="button">Recent Postings</button>
-        </div>
-      </div>
-      <div class="field">
         <label class="inline" title="Dev only: route /api through dev-proxy.py to dodge CORS while testing. This goes away once the price API enables CORS.">
           <input type="checkbox" id="useProxy"> Use local proxy <span class="hint">(dev/debug — temporary)</span>
         </label>
@@ -50,6 +43,12 @@
     <!-- Step 2: build the auction list (inventory -> select -> add -> price) -->
     <section class="card">
       <h2>2. Build your auction</h2>
+      <div class="row lookup-bar">
+        <label for="lookupInput">Look up any item</label>
+        <input type="text" id="lookupInput" placeholder="item name…">
+        <button id="lookupBtn" type="button">Recent Postings</button>
+        <span class="hint">check any item's market — even ones you don't have / aren't selling</span>
+      </div>
       <div class="panes">
         <!-- LEFT: inventory -->
         <div class="pane">

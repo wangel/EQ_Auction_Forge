@@ -45,6 +45,11 @@ main {
   max-width: 1100px;
 }
 
+/* lookup bar above the panes (market check for any item) */
+.lookup-bar { padding-bottom: 10px; margin-bottom: 12px; border-bottom: 1px solid var(--border); }
+.lookup-bar label { color: var(--fg); }
+#lookupInput { width: 14em; }
+
 /* two-pane: inventory (left) -> auction list (right) */
 .panes { display: flex; gap: 16px; align-items: flex-start; }
 .pane { flex: 1 1 0; min-width: 0; }
