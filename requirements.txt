@@ -1,11 +1,24 @@
 # EQ Auction Forge — dependencies
 #
-# This app uses ONLY the Python standard library. There are no pip packages
-# to install, so this file is intentionally (almost) empty.
+# This app uses the Python standard library plus a single pip package
+# (truststore). Install it with:
+#     pip install -r requirements.txt
 #
 # REQUIREMENTS:
-#   - Python 3.8 or newer
+#   - Python 3.10 or newer  (truststore requires 3.10+)
 #   - tkinter  (GUI toolkit)
+#   - truststore  (TLS via the OS-native trust store)
+#
+# truststore:
+#   Makes TLS verification use the operating system's trust store / verifier
+#   (Schannel on Windows) instead of OpenSSL's static cert set. This fixes
+#   "unable to get local issuer certificate" on lean/older Windows machines
+#   whose cert store is missing the API's issuer root — the OS verifier fetches
+#   missing roots on demand (the same reason curl/Edge work). It is imported
+#   best-effort: on Python <3.10 or if not installed, the app falls back to the
+#   default OpenSSL verification (works wherever the OS store already has the
+#   root). The shipped Windows .exe bundles it, so end users need nothing.
+truststore>=0.10
 #
 # About tkinter:
 #   tkinter is part of Python's standard library and CANNOT be installed
@@ -19,6 +32,5 @@
 #     Arch:           sudo pacman -S tk
 #
 # To run from source:
+#     pip install -r requirements.txt
 #     python EQ-Auction_Forge.py
-#
-# (No `pip install -r requirements.txt` step is needed.)

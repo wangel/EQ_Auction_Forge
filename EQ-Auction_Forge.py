@@ -8,7 +8,7 @@
 #   - Auto-packs items across lines (max 255 chars/line, 5 lines/button)
 #   - Load inventory to filter to items you own
 
-# Requirements: None (stdlib only)
+# Requirements: truststore (see requirements.txt). Everything else is stdlib.
 
 import os
 import sys
@@ -27,6 +27,22 @@ from urllib.request import urlopen, Request
 from urllib.parse import urlencode, quote
 
 import ssl
+
+# Verify TLS using the OS-native trust store (Schannel on Windows) instead of
+# OpenSSL's static cert set. This is the root-cause fix for "unable to get local
+# issuer certificate" on lean/older Windows boxes: Python's ssl only sees roots
+# already cached in the store, while the OS verifier fetches missing roots on
+# demand (the same reason curl/Edge "just work"). truststore makes
+# create_default_context() below delegate to the OS, so no CA bundle to ship or
+# keep fresh. ImportError fallback covers a source run on Python <3.10 or before
+# `pip install -r requirements.txt` — verification still works wherever the OS
+# store already has the root.
+try:
+    import truststore
+    truststore.inject_into_ssl()
+    _TRUSTSTORE_OK = True
+except Exception:  # not installed, Python <3.10, or inject failure
+    _TRUSTSTORE_OK = False
 
 import logmon  # log-monitor matcher + tailer (beta, feature/log-monitor)
 
@@ -137,7 +153,8 @@ _config = {"server": "Frostreaver"}
 # Endpoints hang off /api (e.g. {API_BASE}/api/prices/bulk). Use the apex host,
 # NOT the api. subdomain — the TLS cert covers tlp-auctions.com but its SAN does
 # NOT include api.tlp-auctions.com, so the subdomain fails hostname verification.
-API_BASE = "https://tlp-auctions.com"
+API_BASE = ("https://tlp-auctions.com"
+            "")
 
 # EQ socials layout: 10 pages, 12 buttons per page.
 BUTTONS_PER_PAGE = 12
@@ -164,7 +181,8 @@ EQ_CHAR_SECTIONS = ('[socials]', '[hot buttons]', '[key mapping]',
 # SSL context for API calls. Verification is ON: the apex host tlp-auctions.com
 # has a valid cert (Amazon-issued), so we no longer disable it. The old
 # CERT_NONE workaround only existed to tolerate the api.-subdomain hostname
-# mismatch, which the corrected API_BASE above removes.
+# mismatch, which the corrected API_BASE above removes. truststore (injected at
+# import time) makes this delegate to the OS trust store / verifier.
 _ssl_ctx = ssl.create_default_context()
 
 
@@ -645,6 +663,7 @@ class AuctionBuilder:
         self.root.after(100, self._load_db)
         self.root.after(800, self._check_update)
         self.root.after(900, self._refresh_krono_rate)
+        self.root.after(1100, self._check_truststore)
 
     def _center_window(self, w, h, min_w=None, min_h=None):
         """Open at w×h centered on screen — clamped to fit smaller screens — and
@@ -990,6 +1009,29 @@ class AuctionBuilder:
     def _log(self, msg):
         self.console.insert('end', f"{msg}\n")
         self.console.see('end')
+
+    def _check_truststore(self):
+        """Warn if truststore didn't load. Without it, price checking can fail
+        with a certificate error on machines whose Windows cert store lacks the
+        API's root CA. The shipped .exe bundles truststore, so this only fires on
+        a source run that skipped `pip install -r requirements.txt` (or is on
+        Python <3.10)."""
+        if _TRUSTSTORE_OK:
+            return
+        self._log("⚠ WARNING: truststore is not installed — price "
+                  "checking may fail with a certificate error.")
+        self._log("  Fix:  pip install -r requirements.txt")
+        try:
+            messagebox.showwarning(
+                "truststore not installed",
+                "truststore is not installed, so price checking may fail with a "
+                "certificate error on machines whose Windows certificate store "
+                "is missing the price API's root CA.\n\n"
+                "Fix:\n    pip install -r requirements.txt\n\n"
+                "(The downloadable .exe already includes this — only running "
+                "from source needs it.)")
+        except Exception:
+            pass
 
     def _show_help(self):
         """Show help/about dialog."""

@@ -55,6 +55,7 @@ if (-not $SkipBuild) {
     & $python -m nuitka `
         --standalone `
         --enable-plugin=tk-inter `
+        --include-package=truststore `
         --windows-console-mode=disable `
         --assume-yes-for-downloads `
         --output-dir=nuitka_standalone `
