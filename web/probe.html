@@ -39,6 +39,15 @@
           <input type="text" id="itemName" value="Spider Fur Belt">
         </div>
       </div>
+      <div class="field">
+        <label><input type="checkbox" id="useProxy"> Use local proxy (same-origin <code>/api</code>)</label>
+        <span class="hint">
+          Check this when running <code>dev-proxy.py</code> (open via
+          <code>http://localhost:8000/web/probe.html</code>): calls go same-origin
+          through the proxy, so they succeed even before CORS is enabled. Unchecked
+          = direct to <code>tlp-auctions.com</code> (tests the real CORS state).
+        </span>
+      </div>
     </section>
 
     <section class="card">
@@ -58,7 +67,9 @@
 
   <script>
     "use strict";
-    const API = "https://tlp-auctions.com/api";   // correct base (valid cert); endpoints hang off /api
+    // Direct = correct base (valid cert). Proxy = same-origin /api via dev-proxy.py.
+    const apiBase = () =>
+      document.getElementById("useProxy").checked ? "/api" : "https://tlp-auctions.com/api";
     const out = document.getElementById("out");
     const log = (m) => { out.textContent += m + "\n"; out.scrollTop = out.scrollHeight; };
     const val = (id) => document.getElementById(id).value.trim();
@@ -82,7 +93,7 @@
 
     document.getElementById("bulkBtn").addEventListener("click", () => {
       const body = JSON.stringify({ serverName: val("server"), itemIds: [parseInt(val("itemId"), 10)] });
-      run("POST /api/prices/bulk", () => fetch(`${API}/prices/bulk`, {
+      run("POST /api/prices/bulk", () => fetch(`${apiBase()}/prices/bulk`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "Accept": "application/json" },
         body,
@@ -94,12 +105,12 @@
         searchTerm: val("itemName"), exactMatch: "true",
         serverName: val("server"), pageSize: "8",
       });
-      run("GET /api/sales", () => fetch(`${API}/sales?${qs}`, { headers: { "Accept": "application/json" } }));
+      run("GET /api/sales", () => fetch(`${apiBase()}/sales?${qs}`, { headers: { "Accept": "application/json" } }));
     });
 
     document.getElementById("getBtn").addEventListener("click", () => {
       // Bare GET, no custom headers at all — isolates cert/TLS from CORS preflight.
-      run("GET (bare) /api/prices/bulk", () => fetch(`${API}/prices/bulk`));
+      run("GET (bare) /api/prices/bulk", () => fetch(`${apiBase()}/prices/bulk`));
     });
 
     log("Ready. Pick a probe. (A green status = the browser reached the API.)");

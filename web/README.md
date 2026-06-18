@@ -58,6 +58,20 @@ so you can see exactly whether it's reachable — green `HTTP 200` means CORS is
 open and pricing can be wired in; a `CORS policy` error in DevTools means the
 server still needs the headers above.
 
+**Test pricing locally without waiting on CORS** — `dev-proxy.py` (stdlib Python,
+no deps) serves the repo root *and* proxies `/api/*` to `tlp-auctions.com`
+server-side (server-to-server calls don't hit CORS, and it adds CORS headers
+anyway):
+
+```
+python web/dev-proxy.py          # or: python web/dev-proxy.py 8899  (pick a port)
+```
+
+Then open `http://localhost:8000/web/probe.html` and tick **"Use local proxy"** —
+calls go same-origin through the proxy and succeed even before the API enables
+CORS. This is a **dev crutch only**; production stays fully static (direct calls)
+once CORS is on.
+
 ## Notes / known limits
 
 - In-place INI write is **Chromium-only** (Chrome/Edge/Brave) and needs
