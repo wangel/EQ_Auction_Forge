@@ -661,6 +661,14 @@ function addSelectedToAuction() {
 }
 
 // ----- auction pane (right): the curated "to post" list -----
+// Single source of row color, priority krono > vendor-trash > diverge (port of _row_tag).
+function rowTag(item) {
+  if (classifyPrice(item.price)[0] === "krono") return "krono";
+  if (isVendorTrash(item)) return "vendor";
+  if (item.diverge) return "diverge";
+  return null;
+}
+
 function refreshAuction() {
   const body = $("aucBody");
   body.innerHTML = "";
@@ -685,6 +693,8 @@ function refreshAuction() {
       input.addEventListener("click", (e) => e.stopPropagation());
       item._priceInput = input;
       tr.children[2].appendChild(input);
+      const tag = rowTag(item);
+      if (tag) tr.classList.add(tag);
       tr.addEventListener("click", () => toggleAucSel(i, tr));
       body.appendChild(tr);
     });

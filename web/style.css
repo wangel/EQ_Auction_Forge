@@ -57,6 +57,16 @@ tbody tr { cursor: pointer; }
 tbody tr.sel { background: #14361f; }
 tbody tr.sel:hover { background: #1a4a2a; }
 
+/* auction row coloring (priority krono > vendor-trash > diverge), on the name cell */
+tbody tr.krono   td:first-child { color: #cc99ff; }   /* krono-priced */
+tbody tr.vendor  td:first-child { color: var(--orange); } /* worth more to a vendor */
+tbody tr.diverge td:first-child { color: #ffd24d; }   /* recent asks running lower */
+
+.legend { font-size: 12px; color: var(--muted); margin-top: 6px; }
+.legend .krono { color: #cc99ff; }
+.legend .vendor { color: var(--orange); }
+.legend .diverge { color: #ffd24d; }
+
 .card {
   background: var(--panel);
   border: 1px solid var(--border);
