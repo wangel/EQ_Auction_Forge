@@ -1,0 +1,91 @@
+name: Release
+
+# Tag-triggered release. Push a version tag (e.g. v1.4.5) and this:
+#   1. builds the Windows standalone via build.ps1 (Nuitka, pinned 4.1.2),
+#   2. scans the zip on VirusTotal,
+#   3. attaches the zip to a DRAFT GitHub release.
+# The release is left as a DRAFT on purpose -- download it, smoke-test the CI
+# artifact, then click "Publish" by hand. Nothing goes live automatically.
+#
+# Actions are pinned to commit SHAs (resolved 2026-06-18); the trailing comment
+# is the human-readable tag each SHA corresponds to. Bump deliberately.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write          # create the release + upload the asset
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '3.11'
+
+      - name: Read APP_VERSION and verify it matches the tag
+        id: ver
+        shell: pwsh
+        run: |
+          $src = Get-Content EQ-Auction_Forge.py -Raw
+          if ($src -notmatch 'APP_VERSION\s*=\s*"([^"]+)"') { throw "APP_VERSION not found in source" }
+          $appver = $Matches[1]
+          $tagver = "${{ github.ref_name }}".TrimStart('v')
+          Write-Host "APP_VERSION = $appver   tag = ${{ github.ref_name }}"
+          if ($appver -ne $tagver) {
+            throw "Tag ($tagver) does not match APP_VERSION ($appver) -- bump APP_VERSION or retag."
+          }
+          "version=$appver" >> $env:GITHUB_OUTPUT
+
+      - name: Provision the venv build.ps1 expects (Nuitka pinned + truststore)
+        shell: pwsh
+        run: |
+          python -m venv .venv
+          .\.venv\Scripts\python -m pip install --upgrade pip
+          .\.venv\Scripts\python -m pip install nuitka==4.1.2 -r requirements.txt
+          .\.venv\Scripts\python -m nuitka --version
+
+      - name: Build + stage + zip (reuses build.ps1, no -Publish)
+        shell: pwsh
+        run: .\build.ps1
+
+      - name: Upload zip as a workflow artifact (kept even if later steps fail)
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: EQ_Auction_Forge_v${{ steps.ver.outputs.version }}_Windows
+          path: EQ_Auction_Forge_v*_Windows.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: VirusTotal scan
+        uses: crazy-max/ghaction-virustotal@936d8c5c00afe97d3d9a1af26d017cfdf26800a2  # v5.0.0
+        with:
+          vt_api_key: ${{ secrets.VT_API_KEY }}
+          files: |
+            EQ_Auction_Forge_v*_Windows.zip
+
+      - name: Create DRAFT GitHub release with the zip attached
+        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda  # v3.0.0
+        with:
+          draft: true
+          name: EQ Auction Forge ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
+          files: EQ_Auction_Forge_v*_Windows.zip
+          fail_on_unmatched_files: true
+          body: |
+            Windows standalone build (Nuitka). Unzip anywhere and run `EQ_Auction_Forge.exe`.
+
+            **Update if you're on v1.4.4 or older.** An upstream price-API change
+            will break price checking and Recent Postings on older versions; this
+            release moves to the supported endpoint and verifies TLS via the OS
+            trust store, so price checks keep working.
+
+            A VirusTotal scan ran in CI for this build (see the Actions run log
+            for the report link).
