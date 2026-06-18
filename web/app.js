@@ -31,7 +31,10 @@ const EXCLUDED_ITEMS = new Set([
 // ----- app state -----
 const state = {
   db: null,          // { byId: Map<int,{link,price,name}>, byName: Map<name,link> }
-  inventory: [],     // [{name, location, count, id, price}]
+  inventory: [],     // left pane: [{name, location, count, id}]
+  auction: [],       // right pane (curated "to post"): [{name, location, count, id, price, _priceInput}]
+  invSel: new Set(), // selected inventory row indices
+  aucSel: new Set(), // selected auction row indices
   iniText: null,     // optional existing INI loaded for the Download path
 };
 
@@ -363,7 +366,6 @@ async function autoLoadDb({ forceNetwork = false } = {}) {
     state.db = parseItemDb(await gunzipToText(buf));
     $("dbStatus").textContent = `${state.db.byName.size} items loaded`;
     log(`Item DB: ${state.db.byName.size} names, ${state.db.byId.size} by id.`);
-    maybeBuildTable();
   } catch (err) {
     $("dbStatus").textContent = "auto-load failed — serve via localhost";
     log("DB auto-load failed (" + (err && err.message ? err.message : err) +
@@ -496,17 +498,17 @@ async function resolvePrice(name, r, rate, pct, server) {
 // with no id are skipped. A failed batch is retried once then skipped (not
 // fatal). Port of _price_check_all + _resolve_price. (Row coloring TODO.)
 async function priceCheckAll() {
-  if (!state.db || !state.inventory.length) return;
+  if (!state.auction.length) return;
   const server = ($("server").value || "Frostreaver").trim();
 
-  const rowsById = new Map();   // itemId -> [inventory rows sharing that id]
-  for (const item of state.inventory) {
+  const rowsById = new Map();   // itemId -> [auction rows sharing that id]
+  for (const item of state.auction) {
     if (!item.id) continue;
     if (!rowsById.has(item.id)) rowsById.set(item.id, []);
     rowsById.get(item.id).push(item);
   }
   const ids = [...rowsById.keys()];
-  if (!ids.length) { log("Price check: no items have an id to look up (type prices by hand)."); return; }
+  if (!ids.length) { log("Price check: no auction items have an id to look up (type prices by hand)."); return; }
 
   const pct = undercutPct();
   const pc = $("pcBtn"), st = $("pcStatus");
@@ -579,34 +581,122 @@ async function priceCheckAll() {
 // UI wiring
 // =====================================================================
 
-function maybeBuildTable() {
-  if (!state.db || !state.inventory.length) return;
-  const body = $("itemBody");
+// ----- inventory pane (left): list + multi-select + add to auction -----
+function buildInventoryTable() {
+  const body = $("invBody");
   body.innerHTML = "";
-  let linkable = 0;
-  for (const item of state.inventory) {
-    const hasLink = !!linkFor(item);
-    if (hasLink) linkable++;
-    const tr = document.createElement("tr");
-    const qty = item.count > 1 ? `x${item.count}` : "";
-    tr.innerHTML =
-      `<td>${escapeHtml(item.name)}</td>` +
-      `<td class="qty">${qty}</td>` +
-      `<td class="qty">${escapeHtml(item.location)}</td>` +
-      `<td></td>` +
-      `<td>${hasLink ? "✓" : "—"}</td>`;
-    const priceTd = tr.children[3];
-    const input = document.createElement("input");
-    input.type = "text";
-    input.placeholder = "e.g. 500p";
-    input.addEventListener("input", () => { item.price = input.value.trim(); });
-    item._priceInput = input;   // so a price check can fill it
-    priceTd.appendChild(input);
-    body.appendChild(tr);
+  state.invSel.clear();
+  if (!state.inventory.length) {
+    body.innerHTML = `<tr><td colspan="3" class="empty">Load an inventory dump above.</td></tr>`;
+  } else {
+    state.inventory.forEach((item, i) => {
+      const tr = document.createElement("tr");
+      tr.dataset.i = i;
+      tr.innerHTML =
+        `<td>${escapeHtml(item.name)}</td>` +
+        `<td class="qty">${item.count > 1 ? "x" + item.count : ""}</td>` +
+        `<td class="qty">${escapeHtml(item.location)}</td>`;
+      tr.addEventListener("click", () => toggleInvSel(i, tr));
+      tr.addEventListener("dblclick", () => {
+        if (addToAuction(state.inventory[i])) { log(`Added ${item.name}.`); refreshAuction(); }
+      });
+      body.appendChild(tr);
+    });
   }
-  $("genBtn").disabled = false;
-  $("pcBtn").disabled = false;
-  log(`Ready: ${state.inventory.length} items (${linkable} have DB links).`);
+  $("invCount").textContent = `${state.inventory.length} items`;
+  $("selAllBtn").disabled = !state.inventory.length;
+  $("addSelBtn").disabled = !state.inventory.length;
+}
+
+function toggleInvSel(i, tr) {
+  if (state.invSel.has(i)) { state.invSel.delete(i); tr.classList.remove("sel"); }
+  else { state.invSel.add(i); tr.classList.add("sel"); }
+}
+
+function selectAllInv() {
+  const rows = $("invBody").querySelectorAll("tr[data-i]");
+  const allSelected = state.invSel.size === state.inventory.length;
+  state.invSel.clear();
+  rows.forEach((tr) => {
+    if (allSelected) { tr.classList.remove("sel"); }
+    else { state.invSel.add(Number(tr.dataset.i)); tr.classList.add("sel"); }
+  });
+}
+
+// Add one inventory item to the auction list as a fresh copy. Dedupe by id
+// (unique) when present, else by name. Returns true if actually added.
+function addToAuction(inv) {
+  const key = inv.id ? `#${inv.id}` : inv.name.toLowerCase();
+  if (state.auction.some((a) => (a.id ? `#${a.id}` : a.name.toLowerCase()) === key)) return false;
+  state.auction.push({ name: inv.name, location: inv.location, count: inv.count, id: inv.id, price: "" });
+  return true;
+}
+
+function addSelectedToAuction() {
+  if (!state.invSel.size) { log("Select inventory rows first (click them), then Add Selected."); return; }
+  const wanted = state.invSel.size;
+  let added = 0;
+  [...state.invSel].sort((a, b) => a - b).forEach((i) => { if (addToAuction(state.inventory[i])) added++; });
+  log(`Added ${added} item(s) to the auction list` +
+      (added < wanted ? ` (${wanted - added} already there)` : "") + ".");
+  state.invSel.clear();
+  $("invBody").querySelectorAll("tr.sel").forEach((tr) => tr.classList.remove("sel"));
+  refreshAuction();
+}
+
+// ----- auction pane (right): the curated "to post" list -----
+function refreshAuction() {
+  const body = $("aucBody");
+  body.innerHTML = "";
+  state.aucSel.clear();
+  if (!state.auction.length) {
+    body.innerHTML = `<tr><td colspan="3" class="empty">Add items from the left.</td></tr>`;
+  } else {
+    state.auction.forEach((item, i) => {
+      const tr = document.createElement("tr");
+      tr.dataset.i = i;
+      tr.innerHTML =
+        `<td>${escapeHtml(item.name)}</td>` +
+        `<td class="qty">${item.count > 1 ? "x" + item.count : ""}</td>` +
+        `<td></td>`;
+      const input = document.createElement("input");
+      input.type = "text";
+      input.placeholder = "e.g. 500p";
+      input.value = item.price || "";
+      input.addEventListener("input", () => { item.price = input.value.trim(); });
+      // editing the price shouldn't toggle the row's selection
+      input.addEventListener("click", (e) => e.stopPropagation());
+      item._priceInput = input;
+      tr.children[2].appendChild(input);
+      tr.addEventListener("click", () => toggleAucSel(i, tr));
+      body.appendChild(tr);
+    });
+  }
+  $("aucCount").textContent = `${state.auction.length} items`;
+  const has = state.auction.length > 0;
+  $("pcBtn").disabled = !has;
+  $("removeBtn").disabled = !has;
+  $("clearBtn").disabled = !has;
+  $("genBtn").disabled = !has;
+}
+
+function toggleAucSel(i, tr) {
+  if (state.aucSel.has(i)) { state.aucSel.delete(i); tr.classList.remove("sel"); }
+  else { state.aucSel.add(i); tr.classList.add("sel"); }
+}
+
+function removeSelectedFromAuction() {
+  if (!state.aucSel.size) { log("Select auction rows to remove (click them), or use Clear."); return; }
+  const n = state.aucSel.size;
+  [...state.aucSel].sort((a, b) => b - a).forEach((i) => state.auction.splice(i, 1));   // high->low
+  refreshAuction();
+  log(`Removed ${n} item(s) from the auction list.`);
+}
+
+function clearAuction() {
+  state.auction = [];
+  refreshAuction();
+  log("Auction list cleared.");
 }
 
 function escapeHtml(s) {
@@ -617,12 +707,15 @@ function escapeHtml(s) {
 let lastEntries = null;   // [key,val] pairs from the most recent Generate
 
 function generate() {
+  if (!state.db) { log("Item DB not loaded yet — wait for it or check the connection."); return; }
   const prefix = $("prefix").value;
   const suffix = $("suffix").value.trim();
   const page = parseInt($("page").value, 10) || 2;
 
-  const sellable = state.inventory.filter((i) => linkFor(i));
-  if (!sellable.length) { log("Nothing with a DB link to generate."); return; }
+  // Generate from the AUCTION list, not the whole inventory.
+  const sellable = state.auction.filter((i) => linkFor(i));
+  const skipped = state.auction.length - sellable.length;
+  if (!sellable.length) { log("No auction items have a DB link to generate."); return; }
 
   const tokens = sellable.map(linkToken);
   const lines = packToLines(tokens, prefix, suffix, ", ");
@@ -635,6 +728,7 @@ function generate() {
   $("writeBtn").disabled = false;
   $("downloadBtn").disabled = false;
   log(`Generated ${preview.length} button(s) from ${sellable.length} item(s)` +
+      (skipped ? `, ${skipped} skipped (no DB link)` : "") +
       (overflow ? ` — WARNING: ${overflow} dropped past page ${MAX_PAGE}` : "") + ".");
 }
 
@@ -687,8 +781,8 @@ $("invFile").addEventListener("change", async (e) => {
     const text = await file.text();
     state.inventory = parseInventory(text);
     $("invStatus").textContent = `${state.inventory.length} items`;
-    log(`Inventory: ${state.inventory.length} items.`);
-    maybeBuildTable();
+    log(`Inventory: ${state.inventory.length} items. Select items and Add them to the auction list →`);
+    buildInventoryTable();
   } catch (err) {
     $("invStatus").textContent = "failed";
     log("Inventory load failed: " + (err && err.message ? err.message : err));
@@ -708,6 +802,10 @@ $("reloadDb").addEventListener("click", async () => {
   await idbDel(DB_META_KEY);
   autoLoadDb({ forceNetwork: true });
 });
+$("selAllBtn").addEventListener("click", selectAllInv);
+$("addSelBtn").addEventListener("click", addSelectedToAuction);
+$("removeBtn").addEventListener("click", removeSelectedFromAuction);
+$("clearBtn").addEventListener("click", clearAuction);
 $("pcBtn").addEventListener("click", priceCheckAll);
 $("genBtn").addEventListener("click", generate);
 $("writeBtn").addEventListener("click", writeInPlace);

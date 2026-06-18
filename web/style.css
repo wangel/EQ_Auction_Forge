@@ -42,8 +42,20 @@ main {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  max-width: 1000px;
+  max-width: 1100px;
 }
+
+/* two-pane: inventory (left) -> auction list (right) */
+.panes { display: flex; gap: 16px; align-items: flex-start; }
+.pane { flex: 1 1 0; min-width: 0; }
+.pane-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
+.pane-head strong { color: var(--fg); }
+@media (max-width: 820px) { .panes { flex-direction: column; } }
+
+/* selectable rows */
+tbody tr { cursor: pointer; }
+tbody tr.sel { background: #14361f; }
+tbody tr.sel:hover { background: #1a4a2a; }
 
 .card {
   background: var(--panel);
