@@ -43,13 +43,19 @@
         <div class="pane">
           <div class="pane-head"><strong>Inventory</strong><span class="hint" id="invCount">0 items</span></div>
           <div class="row">
+            <input type="text" id="invSearch" placeholder="search…">
+            <label class="inline" title="Show only general bag contents — hides worn gear, Bank, SharedBank, KeyRing">
+              <input type="checkbox" id="invBagsOnly"> Bags only
+            </label>
+          </div>
+          <div class="row">
             <button id="selAllBtn" type="button" disabled>Select All</button>
             <button id="addSelBtn" type="button" disabled>Add Selected &rarr;</button>
             <span class="hint">click to select &middot; double-click adds one</span>
           </div>
           <div class="table-wrap">
-            <table>
-              <thead><tr><th>Item</th><th>Qty</th><th>Location</th></tr></thead>
+            <table id="invTable">
+              <thead><tr><th data-col="name">Item</th><th data-col="qty">Qty</th><th data-col="location">Location</th></tr></thead>
               <tbody id="invBody">
                 <tr><td colspan="3" class="empty">Load an inventory dump above.</td></tr>
               </tbody>
@@ -84,8 +90,8 @@
             <span class="hint" id="pcStatus"></span>
           </div>
           <div class="table-wrap">
-            <table>
-              <thead><tr><th>Item</th><th>Qty</th><th>Price</th><th>Vendor</th></tr></thead>
+            <table id="aucTable">
+              <thead><tr><th data-col="name">Item</th><th data-col="qty">Qty</th><th data-col="price">Price</th><th data-col="vendor">Vendor</th></tr></thead>
               <tbody id="aucBody">
                 <tr><td colspan="4" class="empty">Add items from the left.</td></tr>
               </tbody>

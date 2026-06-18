@@ -119,7 +119,8 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 .table-wrap { max-height: 360px; overflow: auto; border: 1px solid var(--border); border-radius: 4px; }
 table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--border); }
-th { position: sticky; top: 0; background: #222; color: var(--muted); font-weight: normal; }
+th { position: sticky; top: 0; background: #222; color: var(--muted); font-weight: normal; cursor: pointer; user-select: none; }
+th:hover { color: var(--fg); }
 td.empty { color: var(--muted); text-align: center; padding: 18px; }
 td input[type="text"] { width: 90px; padding: 3px 6px; }
 .qty { color: var(--muted); }

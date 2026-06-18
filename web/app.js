@@ -37,6 +37,8 @@ const state = {
   auction: [],       // right pane (curated "to post"): [{name, location, count, id, price, _priceInput}]
   invSel: new Set(), // selected inventory row indices
   aucSel: new Set(), // selected auction row indices
+  invSort: { col: null, desc: false },   // inventory column sort
+  aucSort: { col: null, desc: false },   // auction column sort
   iniText: null,     // optional existing INI loaded for the Download path
 };
 
@@ -597,15 +599,81 @@ async function priceCheckSelected() {
 // UI wiring
 // =====================================================================
 
-// ----- inventory pane (left): list + multi-select + add to auction -----
+// ----- inventory filter + column-sort helpers (port of desktop filter/sort) -----
+// Bags only: general-inventory slots ('General 1', 'General 2-Slot4'); excludes
+// worn gear, Bank, SharedBank, KeyRing, Power Source. Port of _is_bag_location.
+function isBagLocation(loc) { return (loc || "").trim().toLowerCase().startsWith("general"); }
+// Natural sort so 'General 2-Slot10' follows 'Slot9'. Port of _natkey.
+function natkey(s) { return (s || "").split(/(\d+)/).filter((t) => t !== "").map((t) => /^\d+$/.test(t) ? parseInt(t, 10) : t.toLowerCase()); }
+function natCmp(a, b) {
+  const ax = natkey(a), bx = natkey(b);
+  for (let i = 0; i < Math.max(ax.length, bx.length); i++) {
+    const x = ax[i], y = bx[i];
+    if (x === undefined) return -1;
+    if (y === undefined) return 1;
+    if (typeof x === "number" && typeof y === "number") { if (x !== y) return x - y; }
+    else { const xs = String(x), ys = String(y); if (xs !== ys) return xs < ys ? -1 : 1; }
+  }
+  return 0;
+}
+// Group equipped/bank slots first, General bags second; natural-sort within. Port of _location_sort_key.
+function locCmp(la, lb) {
+  const ba = isBagLocation(la) ? 1 : 0, bb = isBagLocation(lb) ? 1 : 0;
+  return ba !== bb ? ba - bb : natCmp(la, lb);
+}
+// Parse a displayed price ('500p','1.5kr','<1p','') to plat for ordering; '' sinks. Port of _price_sort_key.
+function priceSortKey(v) {
+  const s = (v || "").trim().toLowerCase();
+  if (!s) return -1;
+  const kr = s.match(/(\d+(?:\.\d+)?)\s*kr/), pp = s.match(/(\d+(?:\.\d+)?)\s*p/);
+  if (kr || pp) return (kr ? parseFloat(kr[1]) * DEFAULT_KRONO_RATE : 0) + (pp ? parseFloat(pp[1]) : 0);
+  const n = parseFloat(s.replace(/[^0-9.]/g, ""));
+  return Number.isFinite(n) ? n : 0;
+}
+// Comparator for a column, operating on item objects.
+function cmpFor(col) {
+  if (col === "qty") return (a, b) => (a.count || 1) - (b.count || 1);
+  if (col === "location") return (a, b) => locCmp(a.location, b.location);
+  if (col === "price") return (a, b) => priceSortKey(a.price) - priceSortKey(b.price);
+  if (col === "vendor") return (a, b) => priceSortKey(vendorStr(a)) - priceSortKey(vendorStr(b));
+  return (a, b) => (a.name || "").toLowerCase().localeCompare((b.name || "").toLowerCase());
+}
+function toggleSortState(st, col) { st.desc = st.col === col ? !st.desc : false; st.col = col; }
+function sortInventory(col) { toggleSortState(state.invSort, col); buildInventoryTable(); }
+function sortAuction(col) {
+  toggleSortState(state.aucSort, col);
+  const cmp = cmpFor(col);
+  state.auction.sort((a, b) => state.aucSort.desc ? -cmp(a, b) : cmp(a, b));
+  refreshAuction();
+}
+
+// ----- inventory pane (left): filtered/sorted list + multi-select + add -----
+// Visible inventory after Bags-only + search filter and the current sort. Each
+// entry keeps its ORIGINAL index so selection maps back to state.inventory.
+function inventoryView() {
+  const bagsOnly = $("invBagsOnly").checked;
+  const q = $("invSearch").value.trim().toLowerCase();
+  let view = state.inventory
+    .map((item, i) => ({ item, i }))
+    .filter(({ item }) => (!bagsOnly || isBagLocation(item.location)) && (!q || item.name.toLowerCase().includes(q)));
+  if (state.invSort.col) {
+    const cmp = cmpFor(state.invSort.col);
+    view.sort((A, B) => state.invSort.desc ? -cmp(A.item, B.item) : cmp(A.item, B.item));
+  }
+  return view;
+}
+
 function buildInventoryTable() {
   const body = $("invBody");
   body.innerHTML = "";
   state.invSel.clear();
+  const view = state.inventory.length ? inventoryView() : [];
   if (!state.inventory.length) {
     body.innerHTML = `<tr><td colspan="3" class="empty">Load an inventory dump above.</td></tr>`;
+  } else if (!view.length) {
+    body.innerHTML = `<tr><td colspan="3" class="empty">No items match the filter.</td></tr>`;
   } else {
-    state.inventory.forEach((item, i) => {
+    for (const { item, i } of view) {
       const tr = document.createElement("tr");
       tr.dataset.i = i;
       tr.innerHTML =
@@ -617,11 +685,12 @@ function buildInventoryTable() {
         if (addToAuction(state.inventory[i])) { log(`Added ${item.name}.`); refreshAuction(); }
       });
       body.appendChild(tr);
-    });
+    }
   }
-  $("invCount").textContent = `${state.inventory.length} items`;
-  $("selAllBtn").disabled = !state.inventory.length;
-  $("addSelBtn").disabled = !state.inventory.length;
+  const total = state.inventory.length;
+  $("invCount").textContent = view.length === total ? `${total} items` : `${view.length} of ${total}`;
+  $("selAllBtn").disabled = !view.length;
+  $("addSelBtn").disabled = !view.length;
 }
 
 function toggleInvSel(i, tr) {
@@ -631,7 +700,7 @@ function toggleInvSel(i, tr) {
 
 function selectAllInv() {
   const rows = $("invBody").querySelectorAll("tr[data-i]");
-  const allSelected = state.invSel.size === state.inventory.length;
+  const allSelected = rows.length > 0 && state.invSel.size >= rows.length;
   state.invSel.clear();
   rows.forEach((tr) => {
     if (allSelected) { tr.classList.remove("sel"); }
@@ -920,6 +989,10 @@ $("reloadDb").addEventListener("click", async () => {
   autoLoadDb({ forceNetwork: true });
 });
 $("cha").addEventListener("change", refreshAuction);   // recompute Vendor column + trash coloring
+$("invSearch").addEventListener("input", buildInventoryTable);
+$("invBagsOnly").addEventListener("change", buildInventoryTable);
+document.querySelectorAll("#invTable thead th").forEach((th) => th.addEventListener("click", () => sortInventory(th.dataset.col)));
+document.querySelectorAll("#aucTable thead th").forEach((th) => th.addEventListener("click", () => sortAuction(th.dataset.col)));
 $("selAllBtn").addEventListener("click", selectAllInv);
 $("addSelBtn").addEventListener("click", addSelectedToAuction);
 $("removeBtn").addEventListener("click", removeSelectedFromAuction);
