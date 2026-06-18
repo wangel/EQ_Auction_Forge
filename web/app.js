@@ -271,7 +271,7 @@ async function gunzipToText(arrayBuffer) {
 }
 
 // ----- IndexedDB cache so the 11.6 MB gz is downloaded only once -----
-const IDB_NAME = "eqaf", IDB_STORE = "kv", DB_KEY = "items-gz";
+const IDB_NAME = "eqaf", IDB_STORE = "kv", DB_KEY = "items-gz", DB_META_KEY = "items-meta";
 function idbOpen() {
   return new Promise((res, rej) => {
     const r = indexedDB.open(IDB_NAME, 1);
@@ -310,29 +310,59 @@ async function idbDel(key) {
   } catch { /* best effort */ }
 }
 
-// Auto-load the bundled item DB: cache-first, then fetch ../items.txt.gz (one
-// level up — single source of truth, not duplicated into web/). Only works when
-// SERVED (localhost / Pages); under file:// fetch is blocked, so we fall back to
-// the manual picker with a clear message.
+// Auto-load the bundled item DB from ../items.txt.gz (one level up — single
+// source of truth, not duplicated into web/). Cached in IndexedDB so it's
+// downloaded only once, but REVALIDATED every load so a shipped DB update is
+// picked up automatically: send a conditional request with the cached copy's
+// validator (ETag on Pages, Last-Modified via dev-proxy) — unchanged → 304, use
+// cache; changed → download the new one. Only works when SERVED (localhost /
+// Pages); under file:// fetch is blocked.
 async function autoLoadDb({ forceNetwork = false } = {}) {
   $("dbStatus").textContent = "loading…";
   try {
     let buf = forceNetwork ? null : await idbGet(DB_KEY);
-    if (buf) {
-      log("Item DB: using cached copy (IndexedDB).");
-    } else {
-      log("Item DB: fetching items.txt.gz…");
-      const resp = await fetch("../items.txt.gz", { cache: "no-cache" });
-      if (!resp.ok) throw new Error("HTTP " + resp.status);
+    let meta = forceNetwork ? null : await idbGet(DB_META_KEY);   // {etag, lastModified}
+
+    const store = async (resp) => {
       buf = await resp.arrayBuffer();
+      meta = { etag: resp.headers.get("ETag"), lastModified: resp.headers.get("Last-Modified") };
       await idbPut(DB_KEY, buf);
+      await idbPut(DB_META_KEY, meta);
+    };
+
+    if (buf) {
+      // Revalidate with exactly ONE validator (ETag preferred). Sending both
+      // trips SimpleHTTPRequestHandler, which ignores If-Modified-Since when
+      // If-None-Match is present and would then re-send the whole file.
+      const headers = {};
+      if (meta && meta.etag) headers["If-None-Match"] = meta.etag;
+      else if (meta && meta.lastModified) headers["If-Modified-Since"] = meta.lastModified;
+      try {
+        const resp = await fetch("../items.txt.gz", { headers, cache: "no-store" });
+        if (resp.status === 304) {
+          log("Item DB: cached copy is current (304, not re-downloaded).");
+        } else if (resp.ok) {
+          await store(resp);
+          log("Item DB: server copy changed — downloaded the update.");
+        } else {
+          log(`Item DB: revalidation HTTP ${resp.status} — using cached copy.`);
+        }
+      } catch {
+        log("Item DB: offline — using cached copy.");
+      }
+    } else {
+      log("Item DB: first visit, downloading items.txt.gz…");
+      const resp = await fetch("../items.txt.gz", { cache: "no-store" });
+      if (!resp.ok) throw new Error("HTTP " + resp.status);
+      await store(resp);
     }
+
     state.db = parseItemDb(await gunzipToText(buf));
     $("dbStatus").textContent = `${state.db.byName.size} items loaded`;
     log(`Item DB: ${state.db.byName.size} names, ${state.db.byId.size} by id.`);
     maybeBuildTable();
   } catch (err) {
-    $("dbStatus").textContent = "auto-load failed — pick the file manually below";
+    $("dbStatus").textContent = "auto-load failed — serve via localhost";
     log("DB auto-load failed (" + (err && err.message ? err.message : err) +
         "). Under file:// fetch is blocked — serve it (e.g. `python web/dev-proxy.py`).");
   }
@@ -545,6 +575,7 @@ $("iniFile").addEventListener("change", async (e) => {
 
 $("reloadDb").addEventListener("click", async () => {
   await idbDel(DB_KEY);
+  await idbDel(DB_META_KEY);
   autoLoadDb({ forceNetwork: true });
 });
 $("pcBtn").addEventListener("click", priceCheckAll);
