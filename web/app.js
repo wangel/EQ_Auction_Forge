@@ -177,11 +177,13 @@ function packToLines(tokens, prefix, suffix, sep) {
 }
 
 // Lay packed lines into social buttons (5 lines/button, 12 buttons/page, from
-// startPage up; page 1 is never touched). Returns {entries, preview, overflow}.
+// startPage up; page 1 is never touched). Returns {entries, preview, overflow,
+// endPage} — endPage is the last page that got a button (startPage-1 if none),
+// so a second group (links) can begin on a fresh page after this one.
 function buttonsFromLines(lines, btnName, startPage, maxLinesBtn = 5) {
   const entries = [];     // [key, val] pairs in order
   const preview = [];
-  let page = startPage, btn = 1, written = 0, overflow = 0;
+  let page = startPage, btn = 1, written = 0, overflow = 0, endPage = startPage - 1;
   const chunks = [];
   for (let i = 0; i < lines.length; i += maxLinesBtn) chunks.push(i);
   for (const bs of chunks) {
@@ -193,9 +195,10 @@ function buttonsFromLines(lines, btnName, startPage, maxLinesBtn = 5) {
     entries.push([`Page${page}Button${btn}Color`, "0"]);
     bl.forEach((line, idx) => entries.push([`Page${page}Button${btn}Line${idx + 1}`, line]));
     preview.push([label, bl]);
+    endPage = page;
     btn++; written++;
   }
-  return { entries, preview, overflow };
+  return { entries, preview, overflow, endPage };
 }
 
 // Idempotent merge into [Socials]: drop buttons we previously auto-wrote
@@ -718,30 +721,79 @@ function escapeHtml(s) {
 
 let lastEntries = null;   // [key,val] pairs from the most recent Generate
 
+// Classify a price string for the link/text split: ['krono'|'plat'|'none', plat].
+// 'kr' anywhere -> krono (always links); digits -> plat; empty -> none (unpriced).
+// Port of _classify_price.
+function classifyPrice(priceStr) {
+  const s = (priceStr || "").trim().toLowerCase();
+  if (!s) return ["none", 0];
+  if (s.includes("kr")) return ["krono", 0];
+  const digits = s.replace(/[^0-9.]/g, "");
+  if (digits) { const n = parseFloat(digits); return Number.isFinite(n) ? ["plat", Math.trunc(n)] : ["none", 0]; }
+  return ["none", 0];
+}
+
+// Parse a price box ('600', '600p', '1kr') to a plat int. 0 = OFF. Port of
+// _parse_plat_value.
+function parsePlatValue(raw) {
+  raw = (raw || "").trim().toLowerCase().replace(/,/g, "").replace(/\s/g, "");
+  if (!raw) return 0;
+  let mult = 1;
+  if (raw.includes("kr")) { mult = DEFAULT_KRONO_RATE; raw = raw.replace("kr", ""); }
+  raw = raw.replace(/p+$/, "");
+  if (!raw) return mult > 1 ? mult : 0;   // bare "kr" -> one krono
+  const n = parseFloat(raw);
+  return Number.isFinite(n) ? Math.max(Math.trunc(n * mult), 0) : 0;
+}
+function thresholdPlat() { return parsePlatValue($("threshold").value); }
+
 function generate() {
   if (!state.db) { log("Item DB not loaded yet — wait for it or check the connection."); return; }
   const prefix = $("prefix").value;
   const suffix = $("suffix").value.trim();
   const page = parseInt($("page").value, 10) || 2;
+  const threshold = thresholdPlat();
 
   // Generate from the AUCTION list, not the whole inventory.
   const sellable = state.auction.filter((i) => linkFor(i));
   const skipped = state.auction.length - sellable.length;
   if (!sellable.length) { log("No auction items have a DB link to generate."); return; }
 
-  const tokens = sellable.map(linkToken);
-  const lines = packToLines(tokens, prefix, suffix, ", ");
-  const { entries, preview, overflow } = buttonsFromLines(lines, "WTS", page);
-  lastEntries = entries;
+  const textToken = (item) => item.price ? `${item.name} ${item.price}` : `${item.name} pst`;
 
+  let entries, preview, overflow, unpriced = [];
+  if (threshold <= 0) {
+    // Split off -> classic: everything links (WTS#), from `page`.
+    const r = buttonsFromLines(packToLines(sellable.map(linkToken), prefix, suffix, ", "), "WTS", page);
+    entries = r.entries; preview = r.preview; overflow = r.overflow;
+    log(`Generated ${preview.length} button(s) (link everything)` + (skipped ? `, ${skipped} no-link skipped` : "") + ".");
+  } else {
+    // Split on -> cheap plat + unpriced to compact text (WTS#); krono/movers to links (Rare#).
+    const textItems = [], linkItems = [];
+    for (const item of sellable) {
+      const [kind, plat] = classifyPrice(item.price);
+      if (kind === "krono" || (kind === "plat" && plat >= threshold)) linkItems.push(item);
+      else { if (kind === "none") unpriced.push(item.name); textItems.push(item); }
+    }
+    const t = buttonsFromLines(packToLines(textItems.map(textToken), prefix, suffix, " | "), "WTS", page);
+    // Both groups start at `page` and go up (page 1 untouched); links get a fresh page after the text.
+    const linkStart = textItems.length ? Math.max(page, t.endPage + 1) : page;
+    const l = buttonsFromLines(packToLines(linkItems.map(linkToken), prefix, suffix, ", "), "Rare", linkStart);
+    entries = [...t.entries, ...l.entries];
+    preview = [...t.preview, ...l.preview];
+    overflow = t.overflow + l.overflow;
+    log(`Split @ ${threshold}p: ${textItems.length} text (WTS, pg ${page}), ${linkItems.length} link (Rare, pg ${linkStart})` +
+        (skipped ? `, ${skipped} no-link skipped` : "") + ".");
+    if (unpriced.length) log(`  no price → 'pst': ${unpriced.join(", ")}`);
+  }
+
+  lastEntries = entries;
   // Show the INI entries (DC2 rendered as a visible marker in the textarea).
   const shown = entries.map(([k, v]) => `${k}=${v}`).join("\n").replace(new RegExp(DC2, "g"), "·");
   $("output").value = shown;
   $("writeBtn").disabled = false;
   $("downloadBtn").disabled = false;
-  log(`Generated ${preview.length} button(s) from ${sellable.length} item(s)` +
-      (skipped ? `, ${skipped} skipped (no DB link)` : "") +
-      (overflow ? ` — WARNING: ${overflow} dropped past page ${MAX_PAGE}` : "") + ".");
+  if (overflow) log(`  WARNING: ${overflow} button(s) didn't fit past page ${MAX_PAGE} — lower the start page.`);
 }
 
 // File System Access API: pick the character INI, read it, merge, write back.
