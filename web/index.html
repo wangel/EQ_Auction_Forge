@@ -11,8 +11,7 @@
     <h1>EQ Auction Forge <span class="tag">web PoC</span></h1>
     <p class="sub">
       Everything runs in your browser. Your files are read locally and never
-      uploaded. Pricing (the TLP-Auctions API) is intentionally left out of this
-      proof of concept — this proves the core loop: read inventory &rarr; build
+      uploaded. Core loop: read inventory &rarr; price-check &rarr; build
       clickable links &rarr; write the INI.
     </p>
   </header>
@@ -41,9 +40,20 @@
     <section class="card">
       <h2>2. Items &amp; prices</h2>
       <p class="hint">
-        Type a price (e.g. <code>500p</code>) for the items you want to post.
-        Blank = no price shown. (No price-checking in the PoC — type by hand.)
+        <strong>Price Check All</strong> pulls median prices from TLP-Auctions, or
+        type a price (e.g. <code>500p</code>) by hand. Blank = no price shown.
       </p>
+      <div class="row">
+        <div class="field inline">
+          <label for="server">Server</label>
+          <input type="text" id="server" value="Frostreaver">
+        </div>
+        <button id="pcBtn" type="button" disabled>Price Check All</button>
+        <label class="inline" title="Dev only: route /api through dev-proxy.py to dodge CORS while testing">
+          <input type="checkbox" id="useProxy"> Use local proxy
+        </label>
+        <span class="hint" id="pcStatus"></span>
+      </div>
       <div class="table-wrap">
         <table id="itemTable">
           <thead>

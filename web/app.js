@@ -16,6 +16,9 @@
 const DC2 = "\x12";              // EQ item-link delimiter (hex 0x12)
 const BUTTONS_PER_PAGE = 12;
 const MAX_PAGE = 10;
+const BULK_PRICE_LIMIT = 10;     // max item ids per /prices/bulk request
+// Correct apex host (valid cert). "/api" via dev-proxy.py dodges CORS in dev.
+const API_HOST = "https://tlp-auctions.com/api";
 // Built-in newbie/starter junk dropped from inventory loads (exact, lowercase).
 const EXCLUDED_ITEMS = new Set([
   "backpack", "small box", "dagger", "skin of milk", "bread cakes",
@@ -336,6 +339,83 @@ async function autoLoadDb({ forceNetwork = false } = {}) {
 }
 
 // =====================================================================
+// Pricing — TLP-Auctions bulk API (mirrors probe.html / the desktop app)
+// =====================================================================
+
+// Direct = the apex host (valid cert). Proxy = same-origin /api via dev-proxy.py,
+// which dodges CORS while developing (tlp-auctions hasn't enabled CORS yet).
+function apiBase() {
+  const cb = $("useProxy");
+  return cb && cb.checked ? "/api" : API_HOST;
+}
+
+// Price-check every inventory item that has an id: batch ids <=10 per request,
+// POST /prices/bulk, take the server-computed median plat, and fill the row's
+// price box. The bulk API is id-keyed (names aren't unique), so items with no id
+// are skipped — type those by hand. MVP: median plat only; krono/undercut/recent
+// divergence from the desktop are deliberately not ported yet.
+async function priceCheckAll() {
+  if (!state.db || !state.inventory.length) return;
+  const server = ($("server").value || "Frostreaver").trim();
+
+  const rowsById = new Map();   // itemId -> [inventory rows sharing that id]
+  for (const item of state.inventory) {
+    if (!item.id) continue;
+    if (!rowsById.has(item.id)) rowsById.set(item.id, []);
+    rowsById.get(item.id).push(item);
+  }
+  const ids = [...rowsById.keys()];
+  if (!ids.length) { log("Price check: no items have an id to look up (type prices by hand)."); return; }
+
+  const pc = $("pcBtn"), st = $("pcStatus");
+  pc.disabled = true; st.textContent = "checking…";
+  const batches = Math.ceil(ids.length / BULK_PRICE_LIMIT);
+  log(`Price check: ${ids.length} item(s) on ${server} in ${batches} request(s)…`);
+
+  let priced = 0, noData = 0, kronoRate = 0;
+  try {
+    for (let i = 0; i < ids.length; i += BULK_PRICE_LIMIT) {
+      const batch = ids.slice(i, i + BULK_PRICE_LIMIT);
+      const resp = await fetch(`${apiBase()}/prices/bulk`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Accept": "application/json" },
+        body: JSON.stringify({ serverName: server, itemIds: batch }),
+      });
+      if (!resp.ok) throw new Error("HTTP " + resp.status);
+      const data = await resp.json();
+      if (data.kronoRate) kronoRate = data.kronoRate;
+      for (const r of data.items || []) {
+        const rows = rowsById.get(r.itemId);
+        if (!rows) continue;
+        if (r.hasData && r.medianPlatPrice > 0) {
+          const priceStr = `${Math.round(r.medianPlatPrice)}p`;
+          for (const it of rows) {
+            it.price = priceStr;
+            if (it._priceInput) it._priceInput.value = priceStr;
+          }
+          priced++;
+        } else {
+          noData++;
+        }
+      }
+      st.textContent = `checking… ${Math.min(i + BULK_PRICE_LIMIT, ids.length)}/${ids.length}`;
+    }
+    st.textContent = `done — ${priced} priced, ${noData} no data`;
+    log(`Price check complete: ${priced} priced, ${noData} no data` +
+        (kronoRate ? ` (krono rate ~${Math.round(kronoRate)}p)` : "") + ".");
+  } catch (e) {
+    st.textContent = "failed";
+    log("Price check FAILED: " + (e && e.message ? e.message : e));
+    if (!(($("useProxy") || {}).checked)) {
+      log("  → Direct calls need CORS, which tlp-auctions hasn't enabled yet. " +
+          "On localhost, run `python web/dev-proxy.py` and tick 'Use local proxy'.");
+    }
+  } finally {
+    pc.disabled = false;
+  }
+}
+
+// =====================================================================
 // UI wiring
 // =====================================================================
 
@@ -360,10 +440,12 @@ function maybeBuildTable() {
     input.type = "text";
     input.placeholder = "e.g. 500p";
     input.addEventListener("input", () => { item.price = input.value.trim(); });
+    item._priceInput = input;   // so a price check can fill it
     priceTd.appendChild(input);
     body.appendChild(tr);
   }
   $("genBtn").disabled = false;
+  $("pcBtn").disabled = false;
   log(`Ready: ${state.inventory.length} items (${linkable} have DB links).`);
 }
 
@@ -481,6 +563,7 @@ $("reloadDb").addEventListener("click", async () => {
   await idbDel(DB_KEY);
   autoLoadDb({ forceNetwork: true });
 });
+$("pcBtn").addEventListener("click", priceCheckAll);
 $("genBtn").addEventListener("click", generate);
 $("writeBtn").addEventListener("click", writeInPlace);
 $("downloadBtn").addEventListener("click", downloadIni);
