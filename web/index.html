@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>EQ Auction Forge — web (proof of concept)</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>EQ Auction Forge <span class="tag">web PoC</span></h1>
+    <p class="sub">
+      Everything runs in your browser. Your files are read locally and never
+      uploaded. Pricing (the TLP-Auctions API) is intentionally left out of this
+      proof of concept — this proves the core loop: read inventory &rarr; build
+      clickable links &rarr; write the INI.
+    </p>
+  </header>
+
+  <main>
+    <!-- Step 1: load the two data files -->
+    <section class="card">
+      <h2>1. Load files</h2>
+      <div class="field">
+        <label for="dbFile">Item database (<code>items.txt.gz</code>)</label>
+        <input type="file" id="dbFile" accept=".gz">
+        <span class="hint" id="dbStatus">not loaded</span>
+      </div>
+      <div class="field">
+        <label for="invFile">Inventory dump (<code>/outputfile inventory</code>)</label>
+        <input type="file" id="invFile" accept=".txt,.csv,text/plain">
+        <span class="hint" id="invStatus">not loaded</span>
+      </div>
+    </section>
+
+    <!-- Step 2: items + prices -->
+    <section class="card">
+      <h2>2. Items &amp; prices</h2>
+      <p class="hint">
+        Type a price (e.g. <code>500p</code>) for the items you want to post.
+        Blank = no price shown. (No price-checking in the PoC — type by hand.)
+      </p>
+      <div class="table-wrap">
+        <table id="itemTable">
+          <thead>
+            <tr><th>Item</th><th>Qty</th><th>Location</th><th>Price</th><th>Link?</th></tr>
+          </thead>
+          <tbody id="itemBody">
+            <tr><td colspan="5" class="empty">Load both files above to begin.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Step 3: generate -->
+    <section class="card">
+      <h2>3. Generate macros</h2>
+      <div class="row">
+        <div class="field inline">
+          <label for="prefix">Prefix</label>
+          <input type="text" id="prefix" value="/auc WTS">
+        </div>
+        <div class="field inline">
+          <label for="page">Start page</label>
+          <input type="number" id="page" value="2" min="2" max="10">
+        </div>
+        <div class="field inline">
+          <label for="suffix">Suffix</label>
+          <input type="text" id="suffix" value="">
+        </div>
+        <button id="genBtn" disabled>Generate</button>
+      </div>
+      <label for="output" class="hint">INI output (the <code>[Socials]</code> entries this will write):</label>
+      <textarea id="output" rows="10" spellcheck="false" placeholder="Generated INI entries appear here…"></textarea>
+    </section>
+
+    <!-- Step 4: write -->
+    <section class="card">
+      <h2>4. Write the INI</h2>
+      <p class="hint">
+        Both paths write proper <strong>ANSI / latin-1</strong> bytes so the DC2
+        link delimiter survives (UTF-8 would mangle it).
+      </p>
+      <div class="row">
+        <button id="writeBtn" disabled title="Chrome/Edge: pick your character INI and edit it in place">
+          Write to INI file (Chrome/Edge)
+        </button>
+        <button id="downloadBtn" disabled title="Works in any browser: download a merged INI">
+          Download merged INI
+        </button>
+      </div>
+      <div class="field">
+        <label for="iniFile">Existing character INI to merge into (optional, for Download)</label>
+        <input type="file" id="iniFile" accept=".ini,text/plain">
+        <span class="hint" id="iniStatus">none — download will produce a minimal INI</span>
+      </div>
+    </section>
+
+    <section class="card log-card">
+      <h2>Log</h2>
+      <pre id="log"></pre>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

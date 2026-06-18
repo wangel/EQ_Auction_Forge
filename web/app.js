@@ -1,0 +1,428 @@
+"use strict";
+/*
+ * EQ Auction Forge — web proof of concept.
+ *
+ * Pure client-side: files are read in the browser, processed in JS, and the INI
+ * is written back locally. Nothing is uploaded. The logic here is a faithful
+ * port of the desktop app's core (EQ-Auction_Forge.py) — same DC2 link format,
+ * same items.txt columns, same inventory-dump parsing, same 255-char / 5-line /
+ * 12-button packing, same idempotent [Socials] merge.
+ *
+ * Out of scope for this PoC: the TLP-Auctions pricing API (CORS + cert work,
+ * pending), vendor-trash filtering, the threshold link/text split, krono, etc.
+ */
+
+// ----- constants (mirror the Python module globals) -----
+const DC2 = "\x12";              // EQ item-link delimiter (hex 0x12)
+const BUTTONS_PER_PAGE = 12;
+const MAX_PAGE = 10;
+// Built-in newbie/starter junk dropped from inventory loads (exact, lowercase).
+const EXCLUDED_ITEMS = new Set([
+  "backpack", "small box", "dagger", "skin of milk", "bread cakes",
+  "gloomingdeep lantern", "ethereal dreamweave satchel", "dreamweave satchel",
+]);
+
+// ----- app state -----
+const state = {
+  db: null,          // { byId: Map<int,{link,price,name}>, byName: Map<name,link> }
+  inventory: [],     // [{name, location, count, id, price}]
+  iniText: null,     // optional existing INI loaded for the Download path
+};
+
+// ----- tiny DOM helpers -----
+const $ = (id) => (typeof document !== "undefined" ? document.getElementById(id) : null);
+function log(msg) {
+  const el = $("log");
+  if (!el) { return; }   // no DOM (e.g. under Node logic tests) — stay silent
+  el.textContent += msg + "\n";
+  el.scrollTop = el.scrollHeight;
+}
+
+// =====================================================================
+// Faithful ports of the desktop logic
+// =====================================================================
+
+// make_link: DC2 + hash + SPACE + name + DC2. Split hash from name using the
+// known name (NOT hex detection — names starting A-F would break that). The
+// space between hash and name is CRITICAL or the link won't render in-game.
+function makeLink(itemlink, itemName) {
+  if (itemlink.endsWith(itemName)) {
+    const hashPart = itemlink.slice(0, itemlink.length - itemName.length);
+    return `${DC2}${hashPart} ${itemName}${DC2}`;
+  }
+  return `${DC2}${itemlink}${DC2}`;
+}
+
+// Parse items.txt (pipe-delimited, header row with name/itemlink/id/price).
+// Builds the id-keyed map (unambiguous) plus a first-row-wins name fallback.
+function parseItemDb(text) {
+  const byId = new Map();
+  const byName = new Map();
+  let dupNames = 0;
+  const lines = text.split(/\r?\n/);
+  if (!lines.length) return { byId, byName };
+  const header = lines[0].split("|").map((h) => h.trim().toLowerCase());
+  const iName = header.indexOf("name");
+  const iLink = header.indexOf("itemlink");
+  const iId = header.indexOf("id");
+  const iPrice = header.indexOf("price");
+  if (iName < 0 || iLink < 0) throw new Error("items.txt missing name/itemlink columns");
+  for (let r = 1; r < lines.length; r++) {
+    if (!lines[r]) continue;
+    const p = lines[r].split("|");
+    const name = (p[iName] || "").trim();
+    const link = (p[iLink] || "").trim();
+    if (!name || !link) continue;
+    const idStr = iId >= 0 ? (p[iId] || "").trim() : "";
+    const id = /^\d+$/.test(idStr) ? parseInt(idStr, 10) : null;
+    const prStr = iPrice >= 0 ? (p[iPrice] || "").trim() : "";
+    const price = /^\d+$/.test(prStr) ? parseInt(prStr, 10) : null;
+    if (id !== null) byId.set(id, { link, price, name });
+    if (byName.has(name)) dupNames++;
+    else byName.set(name, link);
+  }
+  if (dupNames) log(`  (${dupNames} duplicate item names in DB — id matching disambiguates)`);
+  return { byId, byName };
+}
+
+// Parse an EQ /outputfile inventory dump (tab-separated). Combine stacks /
+// duplicate slots by id (fall back to name when there's no id column), drop
+// excluded junk and the phantom empty/KeyRing rows.
+function parseInventory(text) {
+  const combined = new Map();
+  const order = [];
+  const rows = text.split(/\r?\n/);
+  let header = null;
+  let ni = 1, li = 0, ci = null, ii = null;
+  for (const raw of rows) {
+    const line = raw.replace(/[\r\n]+$/, "");
+    if (!line) continue;
+    const parts = line.split("\t");
+    if (header === null) {
+      header = parts.map((p) => p.trim().toLowerCase());
+      ni = header.indexOf("name"); if (ni < 0) ni = 1;
+      li = header.indexOf("location"); if (li < 0) li = 0;
+      ci = header.indexOf("count"); if (ci < 0) ci = null;
+      ii = header.indexOf("id"); if (ii < 0) ii = null;
+      continue;
+    }
+    if (parts.length < 3) continue;
+    const name = (parts[ni] || "").trim().replace(/\*+$/, "");
+    const loc = (parts[li] || "").trim();
+    const lower = name.toLowerCase();
+    if (lower === "" || lower === "empty" || lower === "name") continue;
+    if (EXCLUDED_ITEMS.has(lower)) continue;
+    let count = 1;
+    if (ci !== null && ci < parts.length) {
+      const n = parseInt((parts[ci] || "").trim(), 10);
+      count = Number.isFinite(n) ? Math.max(n, 1) : 1;
+    }
+    let id = 0;
+    if (ii !== null && ii < parts.length) {
+      const n = parseInt((parts[ii] || "").trim(), 10);
+      id = Number.isFinite(n) ? Math.max(n, 0) : 0;
+    }
+    const key = id ? `#${id}` : name;
+    if (combined.has(key)) {
+      combined.get(key).count += count;
+    } else {
+      combined.set(key, { name, location: loc, count, id, price: "" });
+      order.push(key);
+    }
+  }
+  return order.map((k) => combined.get(k));
+}
+
+// The DB link for an inventory item: prefer the exact id, fall back to name.
+function linkFor(item) {
+  if (item.id && state.db.byId.has(item.id)) return state.db.byId.get(item.id).link;
+  return state.db.byName.get(item.name) || null;
+}
+
+// One auction token: "<link> <price>" (no xN — tlp-auctions reads x2 as 2-for-price).
+function linkToken(item) {
+  const link = makeLink(linkFor(item), item.name);
+  return item.price ? `${link} ${item.price}` : link;
+}
+
+// Pack tokens into <=255-char lines, each led by prefix (and optional suffix).
+function packToLines(tokens, prefix, suffix, sep) {
+  const lines = [];
+  let cur = [];
+  const base = prefix.length + 1;
+  const suffixLen = suffix ? ` ${suffix}`.length : 0;
+  let curLen = base;
+  for (const tok of tokens) {
+    const add = (cur.length ? sep.length : 0) + tok.length;
+    if (cur.length && curLen + add + suffixLen > 255) {
+      lines.push(`${prefix} ` + cur.join(sep) + (suffix ? ` ${suffix}` : ""));
+      cur = [tok];
+      curLen = base + tok.length;
+    } else {
+      cur.push(tok);
+      curLen += add;
+    }
+  }
+  if (cur.length) lines.push(`${prefix} ` + cur.join(sep) + (suffix ? ` ${suffix}` : ""));
+  return lines;
+}
+
+// Lay packed lines into social buttons (5 lines/button, 12 buttons/page, from
+// startPage up; page 1 is never touched). Returns {entries, preview, overflow}.
+function buttonsFromLines(lines, btnName, startPage, maxLinesBtn = 5) {
+  const entries = [];     // [key, val] pairs in order
+  const preview = [];
+  let page = startPage, btn = 1, written = 0, overflow = 0;
+  const chunks = [];
+  for (let i = 0; i < lines.length; i += maxLinesBtn) chunks.push(i);
+  for (const bs of chunks) {
+    if (btn > BUTTONS_PER_PAGE) { page++; btn = 1; }
+    if (page > MAX_PAGE) { overflow = chunks.length - written; break; }
+    const bl = lines.slice(bs, bs + maxLinesBtn);
+    const label = `${btnName}${written + 1}`;
+    entries.push([`Page${page}Button${btn}Name`, label]);
+    entries.push([`Page${page}Button${btn}Color`, "0"]);
+    bl.forEach((line, idx) => entries.push([`Page${page}Button${btn}Line${idx + 1}`, line]));
+    preview.push([label, bl]);
+    btn++; written++;
+  }
+  return { entries, preview, overflow };
+}
+
+// Idempotent merge into [Socials]: drop buttons we previously auto-wrote
+// (Name matches ^(WTS|Rare)\d+$), then update/insert the new entries. Hand-made
+// socials and every non-[Socials] section are left untouched. Faithful port of
+// the desktop _write_ini merge.
+function mergeIntoIni(existing, entries) {
+  const newMap = new Map(entries);
+  if (!existing.includes("[Socials]")) {
+    existing = existing.replace(/\s+$/, "") + "\n\n[Socials]\n";
+  }
+  const autoNameRe = /^(?:WTS|Rare)\d+$/;
+  const dropPrefixes = new Set();
+  let inSocials = false;
+  for (const raw of existing.split("\n")) {
+    const st = raw.trim();
+    if (st === "[Socials]") inSocials = true;
+    else if (st.startsWith("[") && st.endsWith("]")) inSocials = false;
+    else if (inSocials && st.includes("=")) {
+      const eq = st.indexOf("=");
+      const k = st.slice(0, eq).trim();
+      const v = st.slice(eq + 1);
+      if (k.endsWith("Name") && autoNameRe.test(v.trim())) dropPrefixes.add(k.slice(0, -4));
+    }
+  }
+  const isAuto = (key) => {
+    for (const p of dropPrefixes) {
+      if (key === p + "Name" || key === p + "Color") return true;
+      if (key.startsWith(p + "Line") && /^\d+$/.test(key.slice(p.length + 4))) return true;
+    }
+    return false;
+  };
+  const out = [];
+  const written = new Set();
+  inSocials = false;
+  for (const line of existing.split("\n")) {
+    const stripped = line.trim();
+    if (stripped === "[Socials]") { inSocials = true; out.push(line); continue; }
+    if (stripped.startsWith("[") && stripped.endsWith("]")) {
+      if (inSocials) {
+        for (const [k, v] of entries) if (!written.has(k)) { out.push(`${k}=${v}`); written.add(k); }
+      }
+      inSocials = false; out.push(line); continue;
+    }
+    if (inSocials && stripped.includes("=")) {
+      const key = stripped.slice(0, stripped.indexOf("=")).trim();
+      if (newMap.has(key)) { out.push(`${key}=${newMap.get(key)}`); written.add(key); continue; }
+      if (isAuto(key)) continue;
+    }
+    out.push(line);
+  }
+  if (inSocials) {
+    for (const [k, v] of entries) if (!written.has(k)) { out.push(`${k}=${v}`); written.add(k); }
+  }
+  return out.join("\n");
+}
+
+// ----- latin-1 byte helpers (the encoding gotcha, solved cleanly in JS) -----
+// latin-1 is a 1:1 codepoint->byte map for 0-255, so DC2 (0x12) stays 0x12.
+function latin1Bytes(str) {
+  const bytes = new Uint8Array(str.length);
+  for (let i = 0; i < str.length; i++) bytes[i] = str.charCodeAt(i) & 0xff;
+  return bytes;
+}
+function latin1Decode(bytes) {
+  let s = "";
+  for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+  return s;
+}
+
+// ----- gzip decompress in the browser (native, no library) -----
+async function gunzipToText(arrayBuffer) {
+  if (typeof DecompressionStream === "undefined") {
+    throw new Error("This browser lacks DecompressionStream — use a recent Chrome/Edge/Firefox.");
+  }
+  const ds = new DecompressionStream("gzip");
+  const stream = new Blob([arrayBuffer]).stream().pipeThrough(ds);
+  return await new Response(stream).text();
+}
+
+// =====================================================================
+// UI wiring
+// =====================================================================
+
+function maybeBuildTable() {
+  if (!state.db || !state.inventory.length) return;
+  const body = $("itemBody");
+  body.innerHTML = "";
+  let linkable = 0;
+  for (const item of state.inventory) {
+    const hasLink = !!linkFor(item);
+    if (hasLink) linkable++;
+    const tr = document.createElement("tr");
+    const qty = item.count > 1 ? `x${item.count}` : "";
+    tr.innerHTML =
+      `<td>${escapeHtml(item.name)}</td>` +
+      `<td class="qty">${qty}</td>` +
+      `<td class="qty">${escapeHtml(item.location)}</td>` +
+      `<td></td>` +
+      `<td>${hasLink ? "✓" : "—"}</td>`;
+    const priceTd = tr.children[3];
+    const input = document.createElement("input");
+    input.type = "text";
+    input.placeholder = "e.g. 500p";
+    input.addEventListener("input", () => { item.price = input.value.trim(); });
+    priceTd.appendChild(input);
+    body.appendChild(tr);
+  }
+  $("genBtn").disabled = false;
+  log(`Ready: ${state.inventory.length} items (${linkable} have DB links).`);
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+let lastEntries = null;   // [key,val] pairs from the most recent Generate
+
+function generate() {
+  const prefix = $("prefix").value;
+  const suffix = $("suffix").value.trim();
+  const page = parseInt($("page").value, 10) || 2;
+
+  const sellable = state.inventory.filter((i) => linkFor(i));
+  if (!sellable.length) { log("Nothing with a DB link to generate."); return; }
+
+  const tokens = sellable.map(linkToken);
+  const lines = packToLines(tokens, prefix, suffix, ", ");
+  const { entries, preview, overflow } = buttonsFromLines(lines, "WTS", page);
+  lastEntries = entries;
+
+  // Show the INI entries (DC2 rendered as a visible marker in the textarea).
+  const shown = entries.map(([k, v]) => `${k}=${v}`).join("\n").replace(new RegExp(DC2, "g"), "·");
+  $("output").value = shown;
+  $("writeBtn").disabled = false;
+  $("downloadBtn").disabled = false;
+  log(`Generated ${preview.length} button(s) from ${sellable.length} item(s)` +
+      (overflow ? ` — WARNING: ${overflow} dropped past page ${MAX_PAGE}` : "") + ".");
+}
+
+// File System Access API: pick the character INI, read it, merge, write back.
+async function writeInPlace() {
+  if (!lastEntries) return;
+  if (!window.showOpenFilePicker) {
+    log("In-place write needs Chrome/Edge (File System Access API). Use Download instead.");
+    return;
+  }
+  try {
+    const [handle] = await window.showOpenFilePicker({
+      types: [{ description: "EQ character INI", accept: { "text/plain": [".ini"] } }],
+    });
+    const file = await handle.getFile();
+    const existing = latin1Decode(new Uint8Array(await file.arrayBuffer()));
+    const merged = mergeIntoIni(existing, lastEntries);
+    const writable = await handle.createWritable();
+    await writable.write(latin1Bytes(merged));
+    await writable.close();
+    log(`Wrote ${file.name} in place (latin-1, ${merged.length} chars). Make sure EQ was CLOSED.`);
+  } catch (e) {
+    if (e && e.name === "AbortError") return;   // user cancelled the picker
+    log("Write failed: " + (e && e.message ? e.message : e));
+  }
+}
+
+// Download path: merge into the optional uploaded INI (or a minimal stub) and
+// trigger a latin-1 download — works in every browser.
+function downloadIni() {
+  if (!lastEntries) return;
+  const base = state.iniText !== null ? state.iniText : "[Socials]\n";
+  const merged = mergeIntoIni(base, lastEntries);
+  const blob = new Blob([latin1Bytes(merged)], { type: "application/octet-stream" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "EQ_socials.ini";
+  a.click();
+  URL.revokeObjectURL(url);
+  log(`Downloaded merged INI (latin-1, ${merged.length} chars).`);
+}
+
+// ----- input handlers (browser only) -----
+if (typeof document !== "undefined") {
+$("dbFile").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  $("dbStatus").textContent = "decompressing…";
+  try {
+    const text = await gunzipToText(await file.arrayBuffer());
+    state.db = parseItemDb(text);
+    $("dbStatus").textContent = `${state.db.byName.size} items loaded`;
+    log(`Item DB: ${state.db.byName.size} names, ${state.db.byId.size} by id.`);
+    maybeBuildTable();
+  } catch (err) {
+    $("dbStatus").textContent = "failed";
+    log("DB load failed: " + (err && err.message ? err.message : err));
+  }
+});
+
+$("invFile").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  try {
+    const text = await file.text();
+    state.inventory = parseInventory(text);
+    $("invStatus").textContent = `${state.inventory.length} items`;
+    log(`Inventory: ${state.inventory.length} items.`);
+    maybeBuildTable();
+  } catch (err) {
+    $("invStatus").textContent = "failed";
+    log("Inventory load failed: " + (err && err.message ? err.message : err));
+  }
+});
+
+$("iniFile").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  if (!file) { state.iniText = null; return; }
+  state.iniText = latin1Decode(new Uint8Array(await file.arrayBuffer()));
+  $("iniStatus").textContent = `${file.name} loaded — download will merge into it`;
+  log(`Loaded existing INI for merge: ${file.name}`);
+});
+
+$("genBtn").addEventListener("click", generate);
+$("writeBtn").addEventListener("click", writeInPlace);
+$("downloadBtn").addEventListener("click", downloadIni);
+
+log("Ready. Load items.txt.gz and an inventory dump to begin.");
+if (!window.showOpenFilePicker) {
+  log("Note: in-place INI write needs Chrome/Edge; the Download button works everywhere.");
+}
+}  // end browser-only block
+
+// Exported for Node-based logic tests; harmless/ignored in the browser.
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = {
+    makeLink, parseItemDb, parseInventory, packToLines,
+    buttonsFromLines, mergeIntoIni, latin1Bytes, latin1Decode,
+  };
+}
