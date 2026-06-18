@@ -38,6 +38,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     """Static file server (rooted at the repo) that intercepts /api/* and
     forwards it upstream, tacking on permissive CORS headers."""
 
+    def end_headers(self):
+        # DEV ONLY: force the browser to revalidate every asset each load, so you
+        # never test a stale app.js/index.html/style.css from the HTTP cache.
+        # "no-cache" = store but revalidate -> unchanged returns a cheap 304,
+        # changed returns 200 with the new file. (Static hosting/Pages is
+        # unaffected; this proxy is dev-only.)
+        self.send_header("Cache-Control", "no-cache")
+        super().end_headers()
+
     def _send_cors(self):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
