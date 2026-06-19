@@ -287,10 +287,13 @@ def load_inventory(filepath):
     or duplicate gear show up on separate lines per slot. We combine entries
     with the same name into one, summing their counts, so a stack of 2 scrolls
     in two slots becomes a single 'x2' entry. Worthless newbie/starter items
-    (see EXCLUDED_ITEMS) are dropped. Returns a list of
-    {'name', 'location', 'count'} in first-seen order.
+    (see EXCLUDED_ITEMS) are dropped. Bags you're CARRYING are dropped too (see
+    the Slots check below). Per-id bag vs non-bag counts are tracked so the
+    "Bags only" view can show just what's in your bags. Returns a list of
+    {'name', 'location', 'count', 'id', 'bag_count', 'bag_location'} in
+    first-seen order.
     """
-    combined = {}  # key (id or name) -> {'name', 'location', 'count', 'id'}
+    combined = {}  # key (id or name) -> item dict (see return)
     order = []
     with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
         header = None
@@ -308,6 +311,7 @@ def load_inventory(filepath):
             li = header.index('location') if 'location' in header else 0
             ci = header.index('count') if 'count' in header else None
             ii = header.index('id') if 'id' in header else None
+            si = header.index('slots') if 'slots' in header else None
             name = parts[ni].strip().rstrip('*')
             loc = parts[li].strip()
             # '' / 'empty' = empty slots; 'name' = the KeyRing sub-header row
@@ -315,6 +319,21 @@ def load_inventory(filepath):
             if name.lower() in ('', 'empty', 'name'):
                 continue
             if name.lower() in EXCLUDED_ITEMS:
+                continue
+            slots = 0
+            if si is not None and si < len(parts):
+                try:
+                    slots = max(int(parts[si].strip()), 0)
+                except ValueError:
+                    slots = 0
+            # Drop bags you're CARRYING: a container (Slots>0, i.e. capacity for
+            # general inventory) sitting directly in a top-level General slot
+            # ('General 3', not a nested 'General 3-SlotN') is storage holding
+            # your wares, not merchandise. A bag you'd actually sell lives nested
+            # inside another bag, so it keeps a '-Slot' location and survives.
+            # Scoped to 'General N' so equipped gear (whose Slots column counts
+            # AUGMENT slots, e.g. raid gear = 6) is never hit. No bag list needed.
+            if slots > 0 and re.match(r'(?i)^general \d+$', loc):
                 continue
             count = 1
             if ci is not None and ci < len(parts):
@@ -331,12 +350,22 @@ def load_inventory(filepath):
             # Combine stacks/duplicate slots by id (stackables share an id) so
             # two DISTINCT items that share a display name stay separate rows;
             # fall back to name when the dump has no id column (item_id == 0).
+            # Track bag vs non-bag counts separately so "Bags only" can show just
+            # what's in your bags, not a total that folds in Bank/SharedBank.
+            in_bag = loc.lower().startswith('general')
             key = item_id if item_id else name
             if key in combined:
-                combined[key]['count'] += count
+                e = combined[key]
+                e['count'] += count
+                if in_bag:
+                    e['bag_count'] += count
+                    if not e['bag_location']:
+                        e['bag_location'] = loc
             else:
                 combined[key] = {'name': name, 'location': loc,
-                                 'count': count, 'id': item_id}
+                                 'count': count, 'id': item_id,
+                                 'bag_count': count if in_bag else 0,
+                                 'bag_location': loc if in_bag else ''}
                 order.append(key)
     return [combined[k] for k in order]
 
@@ -374,6 +403,7 @@ DEFAULT_SETTINGS = {
         'threshold': '600p',
         'undercut': '0',
         'cha': '75',
+        'minprofit': '50',
     },
     'excluded': [],   # user-added filter names (built-ins always apply too)
 }
@@ -438,7 +468,7 @@ def apply_runtime_settings(settings):
     EXCLUDED_ITEMS = set(_DEFAULT_EXCLUDED) | user_ex
 
 
-APP_VERSION = "1.4.5"
+APP_VERSION = "1.4.6"
 
 # Identify ourselves to the TLP Auctions API. Their operator asked tool authors
 # to send a custom User-Agent so legit tool traffic isn't mistaken for spam and
@@ -779,6 +809,12 @@ class AuctionBuilder:
         self.cha_var = tk.StringVar(value=self.settings['defaults']['cha'])
         ttk.Entry(ff, textvariable=self.cha_var, width=5).pack(side='left')
         self.cha_var.trace_add('write', self._on_cha_change)
+        # Min profit over NPC vendor value to bother listing. Plat items whose
+        # (price - vendor value) is under this get dropped as vendor-trash.
+        ttk.Label(ff, text="Min profit:").pack(side='left', padx=(10, 2))
+        self.minprofit_var = tk.StringVar(value=self.settings['defaults']['minprofit'])
+        ttk.Entry(ff, textvariable=self.minprofit_var, width=6).pack(side='left')
+        self.minprofit_var.trace_add('write', self._on_minprofit_change)
 
         # Tree + scrollbar live in their own frame so a button row can sit
         # below them (mixing pack sides in one parent gets messy otherwise).
@@ -1429,6 +1465,7 @@ Pricing: tlp-auctions.com"""
             'prefix': tk.StringVar(value=d['prefix']),
             'suffix': tk.StringVar(value=d['suffix']),
             'cha': tk.StringVar(value=d['cha']),
+            'minprofit': tk.StringVar(value=d['minprofit']),
         }
 
         pad = {'padx': 10}
@@ -1453,6 +1490,9 @@ Pricing: tlp-auctions.com"""
             ("Default suffix:", self._set_vars['suffix'], "Trailing text on each WTS line."),
             ("Default Charisma:", self._set_vars['cha'],
              "Drives the NPC vendor-value estimate."),
+            ("Default min profit:", self._set_vars['minprofit'],
+             "Plat items whose profit over NPC vendor value is under this are "
+             "dropped as vendor-trash. 0 = off."),
         ]
         for i, (label, var, hint) in enumerate(rows):
             ttk.Label(grid, text=label).grid(row=i * 2, column=0, sticky='w', pady=(6, 0))
@@ -1621,6 +1661,7 @@ Pricing: tlp-auctions.com"""
         self.prefix_var.set(dd['prefix'])
         self.suffix_var.set(dd['suffix'])
         self.cha_var.set(dd['cha'])
+        self.minprofit_var.set(dd['minprofit'])
         self._log("Settings saved. Filter changes apply on the next inventory load.")
         self._close_settings()
 
@@ -2006,16 +2047,24 @@ Pricing: tlp-auctions.com"""
             # Sort alphabetically so items are easy to scan/find.
             for item in sorted(self.inventory, key=lambda i: i['name'].lower()):
                 name = item['name']
-                if bags_only and not self._is_bag_location(item.get('location', '')):
+                # Bags only: show just items physically in your bags, and the
+                # BAG quantity/location (not a total folding in Bank/SharedBank).
+                if bags_only and not item.get('bag_count', 0):
                     continue
                 if search and search not in name.lower():
                     continue
+                if bags_only:
+                    disp_count = item.get('bag_count', item.get('count', 1))
+                    disp_loc = item.get('bag_location') or item.get('location', '')
+                else:
+                    disp_count = item.get('count', 1)
+                    disp_loc = item.get('location', '')
                 item_id = self._item_id(item)
                 if name in self.item_db or item_id in self.item_by_id:
                     row = self.item_tree.insert(
                         '', 'end',
-                        values=(name, self._qty_str(item.get('count', 1)),
-                                item['location'], self._vendor_str(name, item_id)))
+                        values=(name, self._qty_str(disp_count),
+                                disp_loc, self._vendor_str(name, item_id)))
                     self.inv_row_id[row] = item_id
                     count += 1
                     if count >= 200:
@@ -2042,6 +2091,12 @@ Pricing: tlp-auctions.com"""
         """CHA edited -> refresh the inventory Vendor column and re-flag the
         auction list (vendor values just changed)."""
         self._apply_filter()
+        if hasattr(self, 'auc_tree'):
+            self._refresh_vendor_flags()
+
+    def _on_minprofit_change(self, *_a):
+        """Min-profit edited -> re-flag the auction list (the vendor-trash floor
+        moved). Doesn't touch the inventory Vendor column, which is CHA-only."""
         if hasattr(self, 'auc_tree'):
             self._refresh_vendor_flags()
 
@@ -2239,7 +2294,13 @@ Pricing: tlp-auctions.com"""
             item_id = self.inv_row_id.get(iid, 0)
             if not item_id and name not in self.item_db:
                 continue
-            count = self.inv_by_name.get(name, {}).get('count', 1)
+            inv = self.inv_by_name.get(name, {})
+            # In the bags-only inventory view, capture the bag quantity (matches
+            # what's shown) rather than the cross-location total.
+            if self.inv_only_var.get() and self.bags_only_var.get():
+                count = inv.get('bag_count', 0) or inv.get('count', 1)
+            else:
+                count = inv.get('count', 1)
             item = {'name': name, 'price': price, 'count': count, 'id': item_id}
             self.auction_items.append(item)
             self.auc_tree.insert('', 'end', values=self._auc_values(item))
@@ -3030,6 +3091,13 @@ Pricing: tlp-auctions.com"""
         0 = link everything (classic behavior)."""
         return self._parse_plat_value(self.threshold_var.get())
 
+    def _minprofit_plat(self):
+        """Min profit over NPC vendor value to bother listing (plat). 0 = off."""
+        try:
+            return self._parse_plat_value(self.minprofit_var.get())
+        except AttributeError:
+            return 0
+
     def _vendor_pp(self, name, item_id=0):
         """Estimated NPC buyback (plat float) for an item at the current CHA, or
         None if CHA isn't set / the item has no DB base price."""
@@ -3040,14 +3108,18 @@ Pricing: tlp-auctions.com"""
         return vendor_value_pp(price, cha)
 
     def _is_vendor_trash(self, item):
-        """True if this priced item is worth at least as much to an NPC vendor as
-        you'd net from a player (post-undercut price already applied). Unpriced /
-        krono items are never trash — we don't junk what we can't compare."""
+        """True if this priced item isn't worth listing: either worth at least as
+        much to an NPC vendor as you'd net from a player (post-undercut price
+        already applied), OR its profit over vendor value is under the "Min
+        profit" floor (not worth the hassle). Unpriced / krono items are never
+        trash — we don't junk what we can't compare."""
         kind, plat = self._classify_price(item.get('price', ''))
         if kind != 'plat':
             return False
         vpp = self._vendor_pp(item['name'], self._item_id(item))
-        return vpp is not None and vpp >= plat
+        if vpp is None:
+            return False
+        return vpp >= plat or (plat - vpp) < self._minprofit_plat()
 
     @staticmethod
     def _classify_price(price_str):
@@ -3118,16 +3190,24 @@ Pricing: tlp-auctions.com"""
 
     def _report_trash(self, trash):
         """Log + popup the vendor-trash items (worth more to an NPC than to
-        players) with their bag locations, so you know what to go sell."""
+        players, or too thin a margin over vendor) with their bag locations and
+        margin, so you know what to go sell."""
         if not trash:
             return
+        floor = self._minprofit_plat()
+        reason = (f"profit over vendor < {floor}p" if floor
+                  else "worth more to a vendor")
+        self._log(f"{len(trash)} item(s) not worth listing ({reason}) — "
+                  f"left OUT of the macro:")
         rows = []
         for it in trash:
             loc = self.inv_by_name.get(it['name'], {}).get('location', '?')
             vpp = self._vendor_pp(it['name'], self._item_id(it))
+            _, plat = self._classify_price(it.get('price', ''))
             vstr = f"{vpp:.0f}p" if vpp is not None else "?"
+            mstr = f", +{plat - vpp:.0f}p" if vpp is not None else ""
             rows.append((it['name'], it.get('price', ''), vstr, loc))
-            self._log(f"  VENDOR ({vstr} vs {it.get('price', '')}): "
+            self._log(f"  VENDOR ({vstr} vs {it.get('price', '')}{mstr}): "
                       f"{it['name']} @ {loc}")
         shown = rows[:15]
         body = "\n".join(f"• {n}: player {p} / vendor {v} — {loc}"
@@ -3136,7 +3216,7 @@ Pricing: tlp-auctions.com"""
             body += f"\n…and {len(rows) - len(shown)} more (see log)."
         messagebox.showinfo(
             "Go vendor these",
-            f"{len(trash)} item(s) are worth more to a vendor than to players, "
+            f"{len(trash)} item(s) aren't worth listing ({reason}), "
             f"so they were left OUT of your macros:\n\n{body}")
 
     def _check_update(self):
