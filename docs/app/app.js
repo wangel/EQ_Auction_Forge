@@ -36,7 +36,7 @@ const CLIENT_TAG = `EQ-Auction-Forge/${APP_VERSION}`;
 // metadata only: page/referrer/event + server-side IP/country/UA — never any
 // inventory/INI data). Set the deployed Worker subdomain below; until then the
 // placeholder check keeps it inert. Fires on the production origin only.
-const ANALYTICS_URL = "https://eqforge-analytics.YOUR-SUBDOMAIN.workers.dev/collect";
+const ANALYTICS_URL = "https://eqforge-analytics.wangel.workers.dev/collect";
 function track(event) {
   try {
     if (location.hostname !== "wangel.github.io") return;     // production only
