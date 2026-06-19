@@ -41,7 +41,6 @@ const state = {
   invSort: { col: null, desc: false },   // inventory column sort
   aucSort: { col: null, desc: false },   // auction column sort
   kronoRate: 0,      // last krono->plat rate seen (for the Recent Postings hint)
-  iniText: null,     // optional existing INI loaded for the Download path
 };
 
 // ----- tiny DOM helpers -----
@@ -854,9 +853,17 @@ function cmpFor(col) {
   return (a, b) => (a.name || "").toLowerCase().localeCompare((b.name || "").toLowerCase());
 }
 function toggleSortState(st, col) { st.desc = st.col === col ? !st.desc : false; st.col = col; }
-function sortInventory(col) { toggleSortState(state.invSort, col); buildInventoryTable(); }
+// Show a ▲/▼ on the active column header (and clear the others).
+function renderSortArrows(tableId, st) {
+  document.querySelectorAll(`#${tableId} thead th`).forEach((th) => {
+    const base = th.dataset.label || (th.dataset.label = th.textContent.replace(/[ ▲▼]+$/, ""));
+    th.textContent = th.dataset.col === st.col ? `${base} ${st.desc ? "▼" : "▲"}` : base;
+  });
+}
+function sortInventory(col) { toggleSortState(state.invSort, col); renderSortArrows("invTable", state.invSort); buildInventoryTable(); }
 function sortAuction(col) {
   toggleSortState(state.aucSort, col);
+  renderSortArrows("aucTable", state.aucSort);
   const cmp = cmpFor(col);
   state.auction.sort((a, b) => state.aucSort.desc ? -cmp(a, b) : cmp(a, b));
   refreshAuction();
@@ -1130,7 +1137,7 @@ function generate() {
   const shown = entries.map(([k, v]) => `${k}=${v}`).join("\n").replace(new RegExp(DC2, "g"), "·");
   $("output").value = shown;
   $("writeBtn").disabled = false;
-  $("downloadBtn").disabled = false;
+  $("copyBtn").disabled = false;
   if (overflow) log(`  WARNING: ${overflow} button(s) didn't fit past page ${MAX_PAGE} — lower the start page.`);
 }
 
@@ -1138,7 +1145,7 @@ function generate() {
 async function writeInPlace() {
   if (!lastEntries) return;
   if (!window.showOpenFilePicker) {
-    log("In-place write needs Chrome/Edge (File System Access API). Use Download instead.");
+    log("In-place write needs Chrome/Edge (File System Access API). Use 'Copy macros' instead.");
     return;
   }
   try {
@@ -1158,20 +1165,32 @@ async function writeInPlace() {
   }
 }
 
-// Download path: merge into the optional uploaded INI (or a minimal stub) and
-// trigger a latin-1 download — works in every browser.
-function downloadIni() {
+// Copy the generated [Socials] entries to the clipboard (with the real DC2 link
+// char) and show paste instructions. Fallback for browsers without in-place
+// write — Edge blocks .ini downloads, so this replaces the old download path.
+async function copyMacros() {
   if (!lastEntries) return;
-  const base = state.iniText !== null ? state.iniText : "[Socials]\n";
-  const merged = mergeIntoIni(base, lastEntries);
-  const blob = new Blob([latin1Bytes(merged)], { type: "application/octet-stream" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = "EQ_socials.ini";
-  a.click();
-  URL.revokeObjectURL(url);
-  log(`Downloaded merged INI (latin-1, ${merged.length} chars).`);
+  const text = lastEntries.map(([k, v]) => `${k}=${v}`).join("\n");
+  try {
+    await navigator.clipboard.writeText(text);   // needs a secure context (https/localhost) + this click
+    log(`Copied ${lastEntries.length} [Socials] entries to the clipboard.`);
+  } catch {
+    log("Clipboard blocked (needs https/localhost) — use 'Write to INI file' instead.");
+  }
+  const d = document.createElement("div");
+  d.innerHTML =
+    "<p>The macro's <code>[Socials]</code> entries are on your clipboard.</p>" +
+    "<p><strong>Easiest:</strong> use <strong>Write to INI file</strong> above (Chrome/Edge) — it edits your character INI directly, no copy-paste.</p>" +
+    "<p><strong>Manual paste:</strong></p>" +
+    "<ol style='margin:0 0 10px 18px;padding:0'>" +
+    "<li><strong>Close EverQuest first</strong> — it rewrites the INI on exit.</li>" +
+    "<li>Open your character file in the EQ folder, e.g. <code>&lt;Char&gt;_&lt;server&gt;.ini</code>, in a text editor (Notepad is fine).</li>" +
+    "<li>Find the <code>[Socials]</code> section (add it at the end if it's missing).</li>" +
+    "<li>Paste, replacing any old <code>WTS#</code>/<code>Rare#</code> buttons from a previous run.</li>" +
+    "<li>Save, then launch EQ.</li>" +
+    "</ol>" +
+    "<p class='hint'>The clickable-link lines hold a special character; a plain editor preserves it fine.</p>";
+  openModal("Copy macros → paste into your INI", d);
 }
 
 // ----- input handlers (browser only) -----
@@ -1189,14 +1208,6 @@ $("invFile").addEventListener("change", async (e) => {
     $("invStatus").textContent = "failed";
     log("Inventory load failed: " + (err && err.message ? err.message : err));
   }
-});
-
-$("iniFile").addEventListener("change", async (e) => {
-  const file = e.target.files[0];
-  if (!file) { state.iniText = null; return; }
-  state.iniText = latin1Decode(new Uint8Array(await file.arrayBuffer()));
-  $("iniStatus").textContent = `${file.name} loaded — download will merge into it`;
-  log(`Loaded existing INI for merge: ${file.name}`);
 });
 
 $("reloadDb").addEventListener("click", async () => {
@@ -1223,10 +1234,19 @@ $("syncKronoBtn").addEventListener("click", syncKrono);
 $("helpBtn").addEventListener("click", showHelp);
 $("modalClose").addEventListener("click", closeModal);
 $("modal").addEventListener("click", (e) => { if (e.target === $("modal")) closeModal(); });   // backdrop click
-document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("modal").hidden) closeModal(); });
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !$("modal").hidden) { closeModal(); return; }
+  // Delete removes selected auction rows — but not while editing a price box.
+  if (e.key === "Delete" && state.aucSel.size) {
+    const tag = (e.target.tagName || "").toLowerCase();
+    if (tag === "input" || tag === "textarea") return;
+    e.preventDefault();
+    removeSelectedFromAuction();
+  }
+});
 $("genBtn").addEventListener("click", generate);
 $("writeBtn").addEventListener("click", writeInPlace);
-$("downloadBtn").addEventListener("click", downloadIni);
+$("copyBtn").addEventListener("click", copyMacros);
 
 PREF_IDS.forEach((id) => { const el = $(id); if (el) el.addEventListener("change", savePrefs); });
 $("invBagsOnly").addEventListener("change", savePrefs);

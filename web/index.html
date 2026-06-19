@@ -148,21 +148,17 @@
     <section class="card">
       <h2>4. Write the INI</h2>
       <p class="hint">
-        Both paths write proper <strong>ANSI / latin-1</strong> bytes so the DC2
-        link delimiter survives (UTF-8 would mangle it).
+        <strong>Write to INI file</strong> (Chrome/Edge) edits your character INI
+        in place — easiest and handles the link encoding for you. Otherwise
+        <strong>Copy macros</strong> and paste them in by hand.
       </p>
       <div class="row">
         <button id="writeBtn" disabled title="Chrome/Edge: pick your character INI and edit it in place">
           Write to INI file (Chrome/Edge)
         </button>
-        <button id="downloadBtn" disabled title="Works in any browser: download a merged INI">
-          Download merged INI
+        <button id="copyBtn" disabled title="Copy the [Socials] entries and paste them into your character INI">
+          Copy macros
         </button>
-      </div>
-      <div class="field">
-        <label for="iniFile">Existing character INI to merge into (optional, for Download)</label>
-        <input type="file" id="iniFile" accept=".ini,text/plain">
-        <span class="hint" id="iniStatus">none — download will produce a minimal INI</span>
       </div>
     </section>
 
