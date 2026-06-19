@@ -19,6 +19,7 @@ body {
   font-family: Consolas, "Cascadia Mono", monospace;
   font-size: 14px;
   line-height: 1.45;
+  padding-bottom: 44px;   /* clear the fixed status bar */
 }
 
 header {
@@ -125,7 +126,7 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 /* modal overlay (web equivalent of the desktop's pop-up windows) */
 .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; z-index: 100; }
 .modal-backdrop[hidden] { display: none; }
-.modal { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; width: 580px; max-width: 92vw; max-height: 85vh; display: flex; flex-direction: column; }
+.modal { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; width: 760px; max-width: 94vw; max-height: 88vh; display: flex; flex-direction: column; }
 .modal-head { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--border); }
 .modal-head strong { color: var(--green); }
 .modal-head button { padding: 2px 9px; }
@@ -136,8 +137,16 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 .picker-row { padding: 6px 8px; border-bottom: 1px solid var(--border); cursor: pointer; }
 .picker-row:hover { background: #333; color: var(--green); }
 
-/* fixed Log button — reach the activity log from anywhere without scrolling */
-.log-fab { position: fixed; bottom: 16px; right: 16px; z-index: 50; box-shadow: 0 2px 10px rgba(0,0,0,0.55); }
+/* fixed status bar — always-visible latest action + Log access (IDE-style) */
+#statusbar {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 50;
+  display: flex; align-items: center; gap: 12px;
+  padding: 6px 14px; background: #222; border-top: 1px solid var(--border);
+}
+#statusMsg { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 13px; }
+#statusMsg.ok { color: var(--green); }
+#statusMsg.err { color: #ff6666; }
+#statusbar button { padding: 4px 12px; }
 
 .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
 

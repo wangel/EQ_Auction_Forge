@@ -45,11 +45,20 @@ const state = {
 
 // ----- tiny DOM helpers -----
 const $ = (id) => (typeof document !== "undefined" ? document.getElementById(id) : null);
+// The always-visible status bar shows the latest line; tint green on success,
+// red on trouble so completion/errors are unmissable.
+function setStatus(msg) {
+  const el = $("statusMsg");
+  if (!el) return;
+  el.textContent = msg;
+  const m = msg.toLowerCase();
+  el.className = /error|failed|fail|couldn|blocked|no item|nothing|no auction|no recent/.test(m) ? "err"
+    : /complete|generated|added|saved|wrote|downloaded|cleared|removed|in place|priced at/.test(m) ? "ok" : "";
+}
 function log(msg) {
   const el = $("log");
-  if (!el) { return; }   // no DOM (e.g. under Node logic tests) — stay silent
-  el.textContent += msg + "\n";
-  el.scrollTop = el.scrollHeight;
+  if (el) { el.textContent += msg + "\n"; el.scrollTop = el.scrollHeight; }   // hidden store
+  setStatus(msg);   // mirror the latest line to the status bar
 }
 
 // =====================================================================
@@ -518,8 +527,9 @@ async function priceItems(items) {
   if (!ids.length) { log("Price check: no auction items have an id to look up (type prices by hand)."); return; }
 
   const pct = undercutPct();
-  const btns = [$("pcBtn"), $("pcSelBtn")], st = $("pcStatus");
-  btns.forEach((b) => b && (b.disabled = true)); st.textContent = "checking…";
+  const btns = [$("pcBtn"), $("pcSelBtn")];
+  btns.forEach((b) => b && (b.disabled = true));
+  setStatus("Price check: starting…");
   const batches = Math.ceil(ids.length / BULK_PRICE_LIMIT);
   log(`Price check: ${ids.length} item(s) on ${server} in ${batches} request(s)` +
       (pct ? `, undercut ${pct}%` : "") + "…");
@@ -557,10 +567,9 @@ async function priceItems(items) {
           if (res.diverge) diverged.push({ name: rows[0].name, you: res.priceStr, ...res.diverge });
         }
       }
-      st.textContent = `checking… ${Math.min(i + BULK_PRICE_LIMIT, ids.length)}/${ids.length}`;
+      setStatus(`Price check: ${Math.min(i + BULK_PRICE_LIMIT, ids.length)}/${ids.length}…`);
       await sleep(120);   // gentle pacing between batches
     }
-    st.textContent = `done — ${priced} priced, ${noData} no data` + (failed ? `, ${failed} failed` : "");
     log(`Price check complete: ${priced} priced` + (krono ? ` (${krono} krono)` : "") +
         `, ${noData} no data` +
         (failed ? `, ${failed} failed in ${batchErr} batch(es)` : "") +
@@ -579,7 +588,6 @@ async function priceItems(items) {
       }
     }
   } catch (e) {
-    st.textContent = "failed";
     log("Price check error: " + (e && e.message ? e.message : e));
   } finally {
     btns.forEach((b) => b && (b.disabled = false));

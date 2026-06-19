@@ -75,7 +75,7 @@
         </div>
         <!-- RIGHT: auction list -->
         <div class="pane">
-          <div class="pane-head"><strong>Auction list</strong><span class="hint"><span id="pcStatus"></span> <span id="aucCount">0 items</span></span></div>
+          <div class="pane-head"><strong>Auction list</strong><span class="hint" id="aucCount">0 items</span></div>
           <div class="row">
             <div class="field inline">
               <label for="server">Server</label>
@@ -165,7 +165,10 @@
     <pre id="log" hidden></pre>
   </main>
 
-  <button id="logBtn" class="log-fab" type="button" title="Show the activity log">Log</button>
+  <div id="statusbar">
+    <span id="statusMsg">Ready.</span>
+    <button id="logBtn" type="button" title="Show the full activity log">Log</button>
+  </div>
 
   <div id="modal" class="modal-backdrop" hidden>
     <div class="modal">
