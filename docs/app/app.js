@@ -1,15 +1,17 @@
 "use strict";
 /*
- * EQ Auction Forge — web proof of concept.
+ * EQ Auction Forge — browser app (live at wangel.github.io/EQ_Auction_Forge/app/).
  *
  * Pure client-side: files are read in the browser, processed in JS, and the INI
- * is written back locally. Nothing is uploaded. The logic here is a faithful
- * port of the desktop app's core (EQ-Auction_Forge.py) — same DC2 link format,
- * same items.txt columns, same inventory-dump parsing, same 255-char / 5-line /
- * 12-button packing, same idempotent [Socials] merge.
+ * is written back locally. Nothing is uploaded. A faithful port of the desktop
+ * app's core (EQ-Auction_Forge.py) — same DC2 link format, items.txt columns,
+ * inventory-dump parsing, 255-char / 5-line / 12-button packing, idempotent
+ * [Socials] merge, bulk pricing + undercut + recent-asks divergence, live krono
+ * folding, the CHA vendor-trash band, and the threshold link/text split.
  *
- * Out of scope for this PoC: the TLP-Auctions pricing API (CORS + cert work,
- * pending), vendor-trash filtering, the threshold link/text split, krono, etc.
+ * Pricing calls tlp-auctions directly (CORS is enabled for the Pages origin);
+ * localhost dev uses dev-proxy.py. Desktop-only: log monitor, watchlist, the
+ * Settings dialog, EQ auto-install detection, the update check.
  */
 
 // ----- constants (mirror the Python module globals) -----
