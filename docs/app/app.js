@@ -27,7 +27,7 @@ const VENDOR_SLOPE = 0.004, VENDOR_INTERCEPT = 0.584, VENDOR_CAP = 1 / 1.05;
 // Apex host (valid cert). "/api" routes to a same-origin proxy for local dev.
 const API_HOST = "https://tlp-auctions.com/api";
 const SERVER = "Frostreaver";    // only TLP with tlp-auctions data; no server picker needed
-const APP_VERSION = "1.4.5";
+const APP_VERSION = "1.4.6";
 // Identify our traffic to the API owner: every request carries this so they can
 // see/measure our usage and reach out if needed.
 const CLIENT_TAG = `EQ-Auction-Forge/${APP_VERSION}`;
@@ -1339,6 +1339,8 @@ if (!isLocalhost()) {
   const cb = $("useProxy");
   if (cb) { cb.checked = false; const f = cb.closest(".field"); if (f) f.style.display = "none"; }
 }
+
+{ const av = $("appVersion"); if (av) av.textContent = "v" + APP_VERSION; }  // single source of truth
 
 loadPrefs();    // restore saved toolbar values (lightweight Settings)
 log("Ready.");
