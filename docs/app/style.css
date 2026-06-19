@@ -37,6 +37,7 @@ h1 .tag {
   vertical-align: middle;
 }
 .sub { margin: 6px 0 0; color: var(--muted); max-width: 760px; }
+.sub a { color: var(--blue); }
 
 /* header info strip — DB size, live krono rate + sync, feedback, help */
 .topbar { display: flex; align-items: center; gap: 10px; margin-top: 10px; flex-wrap: wrap; font-size: 12px; }
