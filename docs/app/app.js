@@ -142,7 +142,7 @@ function parseInventory(text) {
   const order = [];
   const rows = text.split(/\r?\n/);
   let header = null;
-  let ni = 1, li = 0, ci = null, ii = null;
+  let ni = 1, li = 0, ci = null, ii = null, si = null;
   for (const raw of rows) {
     const line = raw.replace(/[\r\n]+$/, "");
     if (!line) continue;
@@ -153,6 +153,7 @@ function parseInventory(text) {
       li = header.indexOf("location"); if (li < 0) li = 0;
       ci = header.indexOf("count"); if (ci < 0) ci = null;
       ii = header.indexOf("id"); if (ii < 0) ii = null;
+      si = header.indexOf("slots"); if (si < 0) si = null;
       continue;
     }
     if (parts.length < 3) continue;
@@ -161,6 +162,15 @@ function parseInventory(text) {
     const lower = name.toLowerCase();
     if (lower === "" || lower === "empty" || lower === "name") continue;
     if (EXCLUDED_ITEMS.has(lower)) continue;
+    // Drop bags you're CARRYING: a container (Slots>0, i.e. capacity for general
+    // inventory) sitting directly in a top-level General slot ("General 3", not a
+    // nested "General 3-SlotN") is storage holding your wares, not merchandise. A
+    // bag you'd actually sell lives nested inside another bag, so it keeps a
+    // "-Slot" location and survives this. Scoped to "General N" so equipped gear
+    // (whose Slots column counts AUGMENT slots, e.g. raid gear = 6) is never hit.
+    // No hardcoded bag list needed.
+    const slots = si !== null && si < parts.length ? (parseInt((parts[si] || "").trim(), 10) || 0) : 0;
+    if (slots > 0 && /^general \d+$/i.test(loc)) continue;
     let count = 1;
     if (ci !== null && ci < parts.length) {
       const n = parseInt((parts[ci] || "").trim(), 10);
