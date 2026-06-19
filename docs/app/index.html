@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>EQ Auction Forge — web (proof of concept)</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>EQ Auction Forge <span class="tag">web PoC</span></h1>
+    <p class="sub">
+      Proof of Concept - wangel - ALPHA TESTING
+    </p>
+    <div class="topbar">
+      <span id="dbCount">DB: loading…</span>
+      <span class="sep">·</span>
+      <span id="kronoInfo">krono: —</span>
+      <button id="syncKronoBtn" type="button" title="Refresh the live krono rate (1-day average)">Sync</button>
+      <span class="topbar-right">
+        <a id="feedbackLink" href="https://github.com/wangel/EQ_Auction_Forge/issues" target="_blank" rel="noopener">Feedback</a>
+        <button id="helpBtn" type="button">Help</button>
+      </span>
+    </div>
+  </header>
+
+  <main>
+    <!-- Step 1: load the two data files -->
+    <section class="card">
+      <h2>1. Load files</h2>
+      <div class="field">
+        <label>Item database</label>
+        <span class="hint">bundled with the app and loaded automatically — everyone uses the same verified data, so links always generate correctly</span>
+        <div class="row">
+          <span class="hint" id="dbStatus">loading…</span>
+          <button id="reloadDb" type="button" title="Clear the local cache and re-fetch the latest bundled DB">↻ Reload DB</button>
+        </div>
+      </div>
+      <div class="field">
+        <label for="invFile">Inventory dump (<code>/outputfile inventory</code>)</label>
+        <input type="file" id="invFile" accept=".txt,.csv,text/plain">
+        <span class="hint" id="invStatus">not loaded</span>
+      </div>
+      <div class="field">
+        <label class="inline" title="Dev only: route /api through dev-proxy.py to dodge CORS while testing. This goes away once the price API enables CORS.">
+          <input type="checkbox" id="useProxy"> Use local proxy <span class="hint">(dev/debug — temporary)</span>
+        </label>
+      </div>
+    </section>
+
+    <!-- Step 2: build the auction list (inventory -> select -> add -> price) -->
+    <section class="card">
+      <h2>2. Build your auction</h2>
+      <div class="row lookup-bar">
+        <label for="lookupInput">Look up any item</label>
+        <input type="text" id="lookupInput" placeholder="item name…">
+        <button id="lookupBtn" type="button">Recent Postings</button>
+        <span class="hint">check any item's market — even ones you don't have / aren't selling</span>
+      </div>
+      <div class="panes">
+        <!-- LEFT: inventory -->
+        <div class="pane">
+          <div class="pane-head"><strong>Inventory</strong><span class="hint" id="invCount">0 items</span></div>
+          <div class="row">
+            <input type="text" id="invSearch" placeholder="search…">
+            <label class="inline" title="Show only general bag contents — hides worn gear, Bank, SharedBank, KeyRing">
+              <input type="checkbox" id="invBagsOnly" checked> Bags only
+            </label>
+          </div>
+          <div class="row">
+            <button id="selAllBtn" type="button" disabled>Select All</button>
+            <button id="addSelBtn" type="button" disabled
+              title="Adds the highlighted rows to the auction list. Tip: click rows to select; double-click a single row to add just that one.">Add Selected &rarr;</button>
+          </div>
+          <div class="table-wrap">
+            <table id="invTable">
+              <thead><tr><th data-col="name">Item</th><th data-col="qty">Qty</th><th data-col="location">Location</th></tr></thead>
+              <tbody id="invBody">
+                <tr><td colspan="3" class="empty">Load an inventory dump above.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <!-- RIGHT: auction list -->
+        <div class="pane">
+          <div class="pane-head"><strong>Auction list</strong><span class="hint" id="aucCount">0 items</span></div>
+          <div class="row">
+            <div class="field inline">
+              <label for="undercut" title="Shave this % off each checked median, rounded to the nearest 5p">Undercut %</label>
+              <input type="number" id="undercut" value="0" min="0" max="99">
+            </div>
+            <div class="field inline">
+              <label for="cha" title="Your Charisma — sets the NPC vendor buyback estimate (Vendor column). Plat items worth more to a vendor than your price are dropped from the macro.">CHA</label>
+              <input type="number" id="cha" value="75" min="0" max="255">
+            </div>
+          </div>
+          <div class="row">
+            <button id="pcSelBtn" type="button" disabled title="Price-check the selected auction row(s)">Price Check</button>
+            <button id="pcBtn" type="button" disabled>PC All</button>
+            <button id="rpBtn" type="button" disabled title="Recent postings for the selected auction item">Recent Postings</button>
+            <button id="removeBtn" type="button" disabled>Remove</button>
+            <button id="clearBtn" type="button" disabled>Clear</button>
+          </div>
+          <div class="table-wrap">
+            <table id="aucTable">
+              <thead><tr><th data-col="name">Item</th><th data-col="qty">Qty</th><th data-col="price">Price</th><th data-col="vendor">Vendor</th></tr></thead>
+              <tbody id="aucBody">
+                <tr><td colspan="4" class="empty">Add items from the left.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="legend">
+            <span class="krono">krono</span> &middot;
+            <span class="vendor">vendor it</span> &middot;
+            <span class="diverge">recent asks lower &rarr; check Recent Postings</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Step 3: generate -->
+    <section class="card">
+      <h2>3. Generate macros</h2>
+      <div class="row">
+        <div class="field inline">
+          <label for="prefix">Prefix</label>
+          <input type="text" id="prefix" value="/auc WTS">
+        </div>
+        <div class="field inline">
+          <label for="page">Start page</label>
+          <input type="number" id="page" value="2" min="2" max="10">
+        </div>
+        <div class="field inline">
+          <label for="threshold" title="Items priced &ge; this (or in krono) become clickable links; cheaper items go out as compact text. Blank/0 = link everything.">Link if &ge;</label>
+          <input type="text" id="threshold" value="600p">
+        </div>
+        <div class="field inline">
+          <label for="suffix">Suffix</label>
+          <input type="text" id="suffix" value="">
+        </div>
+        <button id="genBtn" disabled>Generate</button>
+      </div>
+      <label for="output" class="hint">INI output (the <code>[Socials]</code> entries this will write):</label>
+      <textarea id="output" rows="10" spellcheck="false" placeholder="Generated INI entries appear here…"></textarea>
+    </section>
+
+    <!-- Step 4: write -->
+    <section class="card">
+      <h2>4. Write the INI</h2>
+      <p class="hint">
+        <strong>Write to INI file</strong> (Chrome/Edge) edits your character INI
+        in place — easiest and handles the link encoding for you. Otherwise
+        <strong>Copy macros</strong> and paste them in by hand.
+      </p>
+      <div class="row">
+        <button id="writeBtn" disabled title="Chrome/Edge: pick your character INI and edit it in place">
+          Write to INI file (Chrome/Edge)
+        </button>
+        <button id="copyBtn" disabled title="Copy the [Socials] entries and paste them into your character INI">
+          Copy macros
+        </button>
+      </div>
+    </section>
+
+    <pre id="log" hidden></pre>
+  </main>
+
+  <div id="statusbar">
+    <span id="statusMsg">Ready.</span>
+    <button id="logBtn" type="button" title="Show the full activity log">Log</button>
+  </div>
+
+  <div id="modal" class="modal-backdrop" hidden>
+    <div class="modal">
+      <div class="modal-head"><strong id="modalTitle"></strong><button id="modalClose" type="button" title="Close">&times;</button></div>
+      <div id="modalBody" class="modal-body"></div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
