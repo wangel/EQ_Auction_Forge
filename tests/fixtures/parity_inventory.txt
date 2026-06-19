@@ -1,0 +1,11 @@
+Location	Name	ID	Count	Slots
+General 1	Test Trade Satchel	90001	1	10
+General 1-Slot1	Gleaming War Helm	90010	1	0
+General 1-Slot2	Gleaming War Helm	90010	1	0
+General 2-Slot4	Spare Storage Box	90002	1	6
+Charm	Charm of Testing	90020	1	6
+SharedBank1	Gleaming War Helm	90010	1	0
+Bank2	Banked Trinket	90030	5	0
+General 3-Slot7	Stacked Potion	90040	3	0
+General 3-Slot8	Stacked Potion	90040	2	0
+General 4	Empty	0	0	0
