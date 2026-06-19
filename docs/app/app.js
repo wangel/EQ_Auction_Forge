@@ -181,11 +181,20 @@ function parseInventory(text) {
       const n = parseInt((parts[ii] || "").trim(), 10);
       id = Number.isFinite(n) ? Math.max(n, 0) : 0;
     }
+    // Track bag vs non-bag quantities separately so "Bags only" can show just
+    // what's in your bags, not a total that folds in Bank/SharedBank copies.
+    const inBag = isBagLocation(loc);
     const key = id ? `#${id}` : name;
     if (combined.has(key)) {
-      combined.get(key).count += count;
+      const e = combined.get(key);
+      e.count += count;
+      if (inBag) { e.bagCount += count; if (!e.bagLocation) e.bagLocation = loc; }
     } else {
-      combined.set(key, { name, location: loc, count, id, price: "" });
+      combined.set(key, {
+        name, location: loc, count, id, price: "",
+        bagCount: inBag ? count : 0,
+        bagLocation: inBag ? loc : "",
+      });
       order.push(key);
     }
   }
@@ -742,7 +751,7 @@ function showHelp() {
 // ----- preferences: persist the toolbar inputs (the lightweight "Settings") -----
 // Saved values seed the boxes next session, exactly like the desktop's defaults.
 const PREFS_KEY = "eqaf-prefs";
-const PREF_IDS = ["undercut", "cha", "prefix", "page", "threshold", "suffix"];
+const PREF_IDS = ["undercut", "cha", "minProfit", "prefix", "page", "threshold", "suffix"];
 function savePrefs() {
   const p = {};
   for (const id of PREF_IDS) { const el = $(id); if (el) p[id] = el.value; }
@@ -928,7 +937,7 @@ function inventoryView() {
   const q = $("invSearch").value.trim().toLowerCase();
   let view = state.inventory
     .map((item, i) => ({ item, i }))
-    .filter(({ item }) => (!bagsOnly || isBagLocation(item.location)) && (!q || item.name.toLowerCase().includes(q)));
+    .filter(({ item }) => (!bagsOnly || item.bagCount > 0) && (!q || item.name.toLowerCase().includes(q)));
   if (state.invSort.col) {
     const cmp = cmpFor(state.invSort.col);
     view.sort((A, B) => state.invSort.desc ? -cmp(A.item, B.item) : cmp(A.item, B.item));
@@ -940,6 +949,7 @@ function buildInventoryTable() {
   const body = $("invBody");
   body.innerHTML = "";
   state.invSel.clear();
+  const bagsOnly = $("invBagsOnly").checked;
   const view = state.inventory.length ? inventoryView() : [];
   if (!state.inventory.length) {
     body.innerHTML = `<tr><td colspan="3" class="empty">Load an inventory dump above.</td></tr>`;
@@ -947,15 +957,18 @@ function buildInventoryTable() {
     body.innerHTML = `<tr><td colspan="3" class="empty">No items match the filter.</td></tr>`;
   } else {
     for (const { item, i } of view) {
+      // In bags-only mode show the bag quantity/location, not the cross-location total.
+      const cnt = bagsOnly ? item.bagCount : item.count;
+      const loc = bagsOnly ? (item.bagLocation || item.location) : item.location;
       const tr = document.createElement("tr");
       tr.dataset.i = i;
       tr.innerHTML =
         `<td>${escapeHtml(item.name)}</td>` +
-        `<td class="qty">${item.count > 1 ? "x" + item.count : ""}</td>` +
-        `<td class="qty">${escapeHtml(item.location)}</td>`;
+        `<td class="qty">${cnt > 1 ? "x" + cnt : ""}</td>` +
+        `<td class="qty">${escapeHtml(loc)}</td>`;
       tr.addEventListener("click", () => toggleInvSel(i, tr));
       tr.addEventListener("dblclick", () => {
-        if (addToAuction(state.inventory[i])) { log(`Added ${item.name}.`); refreshAuction(); }
+        if (addToAuction(state.inventory[i], cnt)) { log(`Added ${item.name}.`); refreshAuction(); }
       });
       body.appendChild(tr);
     }
@@ -983,18 +996,22 @@ function selectAllInv() {
 
 // Add one inventory item to the auction list as a fresh copy. Dedupe by id
 // (unique) when present, else by name. Returns true if actually added.
-function addToAuction(inv) {
+function addToAuction(inv, count) {
   const key = inv.id ? `#${inv.id}` : inv.name.toLowerCase();
   if (state.auction.some((a) => (a.id ? `#${a.id}` : a.name.toLowerCase()) === key)) return false;
-  state.auction.push({ name: inv.name, location: inv.location, count: inv.count, id: inv.id, price: "" });
+  state.auction.push({ name: inv.name, location: inv.location, count: count != null ? count : inv.count, id: inv.id, price: "" });
   return true;
 }
 
 function addSelectedToAuction() {
   if (!state.invSel.size) { log("Select inventory rows first (click them), then Add Selected."); return; }
+  const bagsOnly = $("invBagsOnly").checked;
   const wanted = state.invSel.size;
   let added = 0;
-  [...state.invSel].sort((a, b) => a - b).forEach((i) => { if (addToAuction(state.inventory[i])) added++; });
+  [...state.invSel].sort((a, b) => a - b).forEach((i) => {
+    const inv = state.inventory[i];
+    if (addToAuction(inv, bagsOnly ? inv.bagCount : inv.count)) added++;
+  });
   log(`Added ${added} item(s) to the auction list` +
       (added < wanted ? ` (${wanted - added} already there)` : "") + ".");
   state.invSel.clear();
@@ -1108,6 +1125,8 @@ function parsePlatValue(raw) {
   return Number.isFinite(n) ? Math.max(Math.trunc(n * mult), 0) : 0;
 }
 function thresholdPlat() { return parsePlatValue($("threshold").value); }
+// Min profit over NPC vendor value to bother listing (plat). 0 = off.
+function minProfitPlat() { return parsePlatValue(($("minProfit") || {}).value); }
 
 // ----- NPC vendor value (CHA-based) — port of vendor_multiplier/_vendor_pp/_is_vendor_trash -----
 function vendorMultiplier(cha) { return Math.max(0, Math.min(VENDOR_SLOPE * cha + VENDOR_INTERCEPT, VENDOR_CAP)); }
@@ -1117,20 +1136,31 @@ function chaVal() { const n = parseInt(($("cha") || {}).value, 10); return Numbe
 function baseCopper(item) { const rec = item.id && state.db ? state.db.byId.get(item.id) : null; return rec ? rec.price : null; }
 function vendorPp(item) { const c = chaVal(), base = baseCopper(item); return (c === null || !base) ? null : vendorValuePp(base, c); }
 function vendorStr(item) { const v = vendorPp(item); return v === null ? "" : (v >= 1 ? `${Math.round(v)}p` : "<1p"); }
-// True if a PLAT-priced item is worth >= as much to a vendor as your post price.
-// Krono/unpriced are never trash (can't compare). Port of _is_vendor_trash.
+// True if a PLAT-priced item isn't worth listing: either worth >= as much to a
+// vendor as your post price, OR its profit over vendor value is under the "Min
+// profit" floor (not worth the hassle). Krono/unpriced are never trash (can't
+// compare). Port of _is_vendor_trash, extended with the min-profit floor.
 function isVendorTrash(item) {
   const [kind, plat] = classifyPrice(item.price);
   if (kind !== "plat") return false;
   const v = vendorPp(item);
-  return v !== null && v >= plat;
+  if (v === null) return false;
+  return v >= plat || (plat - v) < minProfitPlat();
 }
 
-// Log the vendor-trash items (with bag location) left out of the macro.
+// Log the vendor-trash items (with bag location + margin) left out of the macro.
 function reportTrash(trash) {
   if (!trash.length) return;
-  log(`${trash.length} item(s) worth more to a vendor than to players — left OUT of the macro:`);
-  for (const it of trash) log(`  VENDOR (${vendorStr(it)} vs ${it.price}): ${it.name} @ ${it.location || "?"}`);
+  const floor = minProfitPlat();
+  log(`${trash.length} item(s) not worth listing` +
+      (floor ? ` (profit over vendor < ${floor}p)` : ` (worth more to a vendor)`) +
+      ` — left OUT of the macro:`);
+  for (const it of trash) {
+    const v = vendorPp(it), [, plat] = classifyPrice(it.price);
+    const margin = v !== null ? Math.round(plat - v) : null;
+    log(`  VENDOR (${vendorStr(it)} vs ${it.price}${margin !== null ? `, +${margin}p` : ""}): ` +
+        `${it.name} @ ${it.location || "?"}`);
+  }
 }
 
 function generate() {
@@ -1236,7 +1266,7 @@ async function copyMacros() {
     "<p><strong>Manual paste:</strong></p>" +
     "<ol style='margin:0 0 10px 18px;padding:0'>" +
     "<li><strong>Close EverQuest first</strong> — it rewrites the INI on exit.</li>" +
-    "<li>Open your character file in the EQ folder, e.g. <code>&lt;Char&gt;_&lt;server&gt;.ini</code>, in a text editor (Notepad is fine).</li>" +
+    "<li>Open your character file in the EQ folder, e.g. <code>&lt;Char&gt;_&lt;server&gt;_&lt;class&gt;.ini</code> (like <code>Alan_frostreaver_ROG.ini</code>), in a text editor (Notepad is fine).</li>" +
     "<li>Find the <code>[Socials]</code> section (add it at the end if it's missing).</li>" +
     "<li>Paste, replacing any old <code>WTS#</code>/<code>Rare#</code> buttons from a previous run.</li>" +
     "<li>Save, then launch EQ.</li>" +

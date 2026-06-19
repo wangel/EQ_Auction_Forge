@@ -94,6 +94,10 @@
               <label for="cha" title="Your Charisma — sets the NPC vendor buyback estimate (Vendor column). Plat items worth more to a vendor than your price are dropped from the macro.">CHA</label>
               <input type="number" id="cha" value="75" min="0" max="255">
             </div>
+            <div class="field inline">
+              <label for="minProfit" title="Min profit over NPC vendor value to bother listing. Plat items whose (your price − vendor value) is under this are pulled from the macro and reported as 'vendor it'. 0 = off.">Min profit</label>
+              <input type="number" id="minProfit" value="50" min="0">
+            </div>
           </div>
           <div class="row">
             <button id="pcSelBtn" type="button" disabled title="Price-check the selected auction row(s)">Price Check</button>
