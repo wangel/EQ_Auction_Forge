@@ -630,6 +630,18 @@ function openModal(title, bodyNode) {
 }
 function closeModal() { $("modal").hidden = true; $("modalBody").innerHTML = ""; }
 
+// Show the accumulated activity log in the modal (the log element is hidden;
+// this is the on-demand viewer reached via the fixed Log button).
+function showLog() {
+  const pre = document.createElement("pre");
+  pre.className = "postings";
+  pre.style.maxHeight = "65vh";
+  pre.style.whiteSpace = "pre-wrap";
+  pre.textContent = ($("log").textContent || "").trim() || "(nothing logged yet)";
+  openModal("Activity log", pre);
+  requestAnimationFrame(() => { pre.scrollTop = pre.scrollHeight; });   // newest at bottom
+}
+
 // Set an auction item's price to the recent median (no undercut — match the live
 // market, don't undercut it). Port of _use_recent_median (auction-list case).
 function useRecentMedian(item, price) {
@@ -1142,6 +1154,7 @@ $("rpBtn").addEventListener("click", recentPostingsSelected);
 $("pcBtn").addEventListener("click", priceCheckAll);
 $("lookupBtn").addEventListener("click", recentPostingsLookup);
 $("lookupInput").addEventListener("keydown", (e) => { if (e.key === "Enter") recentPostingsLookup(); });
+$("logBtn").addEventListener("click", showLog);
 $("modalClose").addEventListener("click", closeModal);
 $("modal").addEventListener("click", (e) => { if (e.target === $("modal")) closeModal(); });   // backdrop click
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("modal").hidden) closeModal(); });
