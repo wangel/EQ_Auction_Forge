@@ -34,6 +34,8 @@ items.txt
 # User data
 *.json
 !package.json
+# ...but DO track the parity-test golden corpus
+!tests/golden/*.json
 
 # EQ files
 *.ini

@@ -1,0 +1,22 @@
+[
+  {
+    "itemlink": "1A2B3C4D5ESword of Testing",
+    "name": "Sword of Testing",
+    "expect": "\u00121A2B3C4D5E Sword of Testing\u0012"
+  },
+  {
+    "itemlink": "00FF11Black Steel Defender",
+    "name": "Black Steel Defender",
+    "expect": "\u001200FF11 Black Steel Defender\u0012"
+  },
+  {
+    "itemlink": "abcdefMystic Orb",
+    "name": "Mystic Orb",
+    "expect": "\u0012abcdef Mystic Orb\u0012"
+  },
+  {
+    "itemlink": "NOHASHHEREOrphan",
+    "name": "DoesNotMatch",
+    "expect": "\u0012NOHASHHEREOrphan\u0012"
+  }
+]

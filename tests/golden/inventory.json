@@ -1,0 +1,42 @@
+[
+  {
+    "name": "Gleaming War Helm",
+    "location": "General 1-Slot1",
+    "count": 3,
+    "id": 90010,
+    "bag_count": 2,
+    "bag_location": "General 1-Slot1"
+  },
+  {
+    "name": "Spare Storage Box",
+    "location": "General 2-Slot4",
+    "count": 1,
+    "id": 90002,
+    "bag_count": 1,
+    "bag_location": "General 2-Slot4"
+  },
+  {
+    "name": "Charm of Testing",
+    "location": "Charm",
+    "count": 1,
+    "id": 90020,
+    "bag_count": 0,
+    "bag_location": ""
+  },
+  {
+    "name": "Banked Trinket",
+    "location": "Bank2",
+    "count": 5,
+    "id": 90030,
+    "bag_count": 0,
+    "bag_location": ""
+  },
+  {
+    "name": "Stacked Potion",
+    "location": "General 3-Slot7",
+    "count": 5,
+    "id": 90040,
+    "bag_count": 5,
+    "bag_location": "General 3-Slot7"
+  }
+]
