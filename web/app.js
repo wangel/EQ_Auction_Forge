@@ -382,6 +382,7 @@ async function autoLoadDb({ forceNetwork = false } = {}) {
 
     state.db = parseItemDb(await gunzipToText(buf));
     $("dbStatus").textContent = `${state.db.byName.size} items loaded`;
+    $("dbCount").textContent = `DB: ${state.db.byName.size.toLocaleString()} items`;
     log(`Item DB: ${state.db.byName.size} names, ${state.db.byId.size} by id.`);
   } catch (err) {
     $("dbStatus").textContent = "auto-load failed — serve via localhost";
@@ -648,6 +649,60 @@ function showLog() {
   pre.textContent = ($("log").textContent || "").trim() || "(nothing logged yet)";
   openModal("Activity log", pre);
   requestAnimationFrame(() => { pre.scrollTop = pre.scrollHeight; });   // newest at bottom
+}
+
+// ----- header: live krono rate (+ Sync) and Help -----
+async function syncKrono() {
+  const server = ($("server").value || "Frostreaver").trim();
+  const btn = $("syncKronoBtn"); if (btn) btn.disabled = true;
+  setStatus("Syncing krono rate…");
+  try {
+    const rate = await fetchKronoRate(server);
+    if (rate) {
+      state.kronoRate = rate;
+      const t = new Date(); let h = t.getHours(); const ap = h < 12 ? "am" : "pm"; h = h % 12 || 12;
+      $("kronoInfo").textContent = `krono ~${rate.toLocaleString()}p · synced @ ${h}:${String(t.getMinutes()).padStart(2, "0")}${ap}`;
+      log(`Krono rate: ${rate.toLocaleString()}p/kr (1-day avg).`);
+    } else {
+      $("kronoInfo").textContent = `krono ~${(state.kronoRate || DEFAULT_KRONO_RATE).toLocaleString()}p (sync failed)`;
+      log("Krono sync failed — using fallback rate.");
+    }
+  } finally { if (btn) btn.disabled = false; }
+}
+
+function showHelp() {
+  const d = document.createElement("div");
+  d.innerHTML =
+    "<p><strong>Quick start</strong></p>" +
+    "<ol style='margin:0 0 10px 18px;padding:0'>" +
+    "<li>In EQ: <code>/outputfile inventory</code>, then load that file under <strong>1. Load files</strong>.</li>" +
+    "<li><strong>Build your auction:</strong> select items on the left (Bags only hides worn gear), then <strong>Add Selected &rarr;</strong>.</li>" +
+    "<li><strong>Price:</strong> <strong>PC All</strong> (or Price Check for the selected rows). Set <strong>Undercut %</strong> / <strong>CHA</strong> first if you like.</li>" +
+    "<li><strong>Generate</strong> the macro, then <strong>Write</strong>/<strong>Download</strong> the INI (close EQ first).</li>" +
+    "</ol>" +
+    "<p class='hint'>Row colors: <span style='color:#cc99ff'>krono</span> &middot; " +
+    "<span style='color:var(--orange)'>vendor-trash (left out of the macro)</span> &middot; " +
+    "<span style='color:#ffd24d'>recent asks lower &mdash; check Recent Postings</span>.</p>" +
+    "<p class='hint'>Use <strong>Look up any item</strong> to check the recent market for things you don't own. " +
+    "In-place INI write needs Chrome/Edge served over https or localhost.</p>";
+  openModal("Help — EQ Auction Forge", d);
+}
+
+// ----- preferences: persist the toolbar inputs (the lightweight "Settings") -----
+// Saved values seed the boxes next session, exactly like the desktop's defaults.
+const PREFS_KEY = "eqaf-prefs";
+const PREF_IDS = ["server", "undercut", "cha", "prefix", "page", "threshold", "suffix"];
+function savePrefs() {
+  const p = {};
+  for (const id of PREF_IDS) { const el = $(id); if (el) p[id] = el.value; }
+  const bo = $("invBagsOnly"); if (bo) p.bagsOnly = bo.checked;
+  try { localStorage.setItem(PREFS_KEY, JSON.stringify(p)); } catch { /* private mode etc. */ }
+}
+function loadPrefs() {
+  let p;
+  try { p = JSON.parse(localStorage.getItem(PREFS_KEY) || "{}"); } catch { p = {}; }
+  for (const id of PREF_IDS) { if (p[id] !== undefined && $(id)) $(id).value = p[id]; }
+  if (typeof p.bagsOnly === "boolean" && $("invBagsOnly")) $("invBagsOnly").checked = p.bagsOnly;
 }
 
 // Set an auction item's price to the recent median (no undercut — match the live
@@ -1163,6 +1218,8 @@ $("pcBtn").addEventListener("click", priceCheckAll);
 $("lookupBtn").addEventListener("click", recentPostingsLookup);
 $("lookupInput").addEventListener("keydown", (e) => { if (e.key === "Enter") recentPostingsLookup(); });
 $("logBtn").addEventListener("click", showLog);
+$("syncKronoBtn").addEventListener("click", syncKrono);
+$("helpBtn").addEventListener("click", showHelp);
 $("modalClose").addEventListener("click", closeModal);
 $("modal").addEventListener("click", (e) => { if (e.target === $("modal")) closeModal(); });   // backdrop click
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("modal").hidden) closeModal(); });
@@ -1170,8 +1227,13 @@ $("genBtn").addEventListener("click", generate);
 $("writeBtn").addEventListener("click", writeInPlace);
 $("downloadBtn").addEventListener("click", downloadIni);
 
+PREF_IDS.forEach((id) => { const el = $(id); if (el) el.addEventListener("change", savePrefs); });
+$("invBagsOnly").addEventListener("change", savePrefs);
+
+loadPrefs();    // restore saved toolbar values (lightweight Settings)
 log("Ready.");
 autoLoadDb();   // pull the bundled DB automatically when served (localhost/Pages)
+syncKrono();    // pull the live krono rate for the header (best-effort)
 if (!window.showOpenFilePicker) {
   log("Note: in-place INI write needs Chrome/Edge; the Download button works everywhere.");
 }

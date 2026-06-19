@@ -38,6 +38,14 @@ h1 .tag {
 }
 .sub { margin: 6px 0 0; color: var(--muted); max-width: 760px; }
 
+/* header info strip — DB size, live krono rate + sync, feedback, help */
+.topbar { display: flex; align-items: center; gap: 10px; margin-top: 10px; flex-wrap: wrap; font-size: 12px; }
+.topbar .sep { color: var(--border); }
+.topbar a { color: var(--blue); }
+.topbar button { padding: 3px 10px; font-size: 12px; }
+.topbar-right { margin-left: auto; display: flex; gap: 12px; align-items: center; }
+#dbCount, #kronoInfo { color: var(--muted); }
+
 main {
   padding: 18px 22px;
   display: flex;

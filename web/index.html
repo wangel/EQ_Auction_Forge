@@ -10,10 +10,18 @@
   <header>
     <h1>EQ Auction Forge <span class="tag">web PoC</span></h1>
     <p class="sub">
-      Everything runs in your browser. Your files are read locally and never
-      uploaded. Core loop: read inventory &rarr; price-check &rarr; build
-      clickable links &rarr; write the INI.
+      Proof of Concept - wangel - ALPHA TESTING
     </p>
+    <div class="topbar">
+      <span id="dbCount">DB: loading…</span>
+      <span class="sep">·</span>
+      <span id="kronoInfo">krono: —</span>
+      <button id="syncKronoBtn" type="button" title="Refresh the live krono rate (1-day average)">Sync</button>
+      <span class="topbar-right">
+        <a id="feedbackLink" href="https://github.com/wangel/EQ_Auction_Forge/issues" target="_blank" rel="noopener">Feedback</a>
+        <button id="helpBtn" type="button">Help</button>
+      </span>
+    </div>
   </header>
 
   <main>
