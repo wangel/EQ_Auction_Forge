@@ -24,6 +24,7 @@ const RECENT_SALES_LIMIT = 8;    // recent postings pulled per recent-asks looku
 const VENDOR_SLOPE = 0.004, VENDOR_INTERCEPT = 0.584, VENDOR_CAP = 1 / 1.05;
 // Correct apex host (valid cert). "/api" via dev-proxy.py dodges CORS in dev.
 const API_HOST = "https://tlp-auctions.com/api";
+const SERVER = "Frostreaver";    // only TLP with tlp-auctions data; no server picker needed
 // Built-in newbie/starter junk dropped from inventory loads (exact, lowercase).
 const EXCLUDED_ITEMS = new Set([
   "backpack", "small box", "dagger", "skin of milk", "bread cakes",
@@ -516,7 +517,7 @@ async function resolvePrice(name, r, rate, pct, server) {
 // with no id are skipped. A failed batch is retried once then skipped (not
 // fatal). Port of _price_check_all + _resolve_price. (Row coloring TODO.)
 async function priceItems(items) {
-  const server = ($("server").value || "Frostreaver").trim();
+  const server = SERVER;
 
   const rowsById = new Map();   // itemId -> [auction rows sharing that id]
   for (const item of items) {
@@ -653,7 +654,7 @@ function showLog() {
 
 // ----- header: live krono rate (+ Sync) and Help -----
 async function syncKrono() {
-  const server = ($("server").value || "Frostreaver").trim();
+  const server = SERVER;
   const btn = $("syncKronoBtn"); if (btn) btn.disabled = true;
   setStatus("Syncing krono rate…");
   try {
@@ -691,7 +692,7 @@ function showHelp() {
 // ----- preferences: persist the toolbar inputs (the lightweight "Settings") -----
 // Saved values seed the boxes next session, exactly like the desktop's defaults.
 const PREFS_KEY = "eqaf-prefs";
-const PREF_IDS = ["server", "undercut", "cha", "prefix", "page", "threshold", "suffix"];
+const PREF_IDS = ["undercut", "cha", "prefix", "page", "threshold", "suffix"];
 function savePrefs() {
   const p = {};
   for (const id of PREF_IDS) { const el = $(id); if (el) p[id] = el.value; }
@@ -719,7 +720,7 @@ function useRecentMedian(item, price) {
 // (enables the divergence hint vs the check median + a Set-price button); null
 // for a DB lookup of something you don't have. Port of _show_recent_postings.
 async function showRecentPostings(name, item = null) {
-  const server = ($("server").value || "Frostreaver").trim();
+  const server = SERVER;
   log(`Fetching recent postings: ${name}…`);
   let sales;
   try { sales = await fetchRecentSales(name, server); }
