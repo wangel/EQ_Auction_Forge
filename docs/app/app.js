@@ -10,7 +10,7 @@
  * folding, the CHA vendor-trash band, and the threshold link/text split.
  *
  * Pricing calls tlp-auctions directly (CORS is enabled for the Pages origin);
- * localhost dev uses dev-proxy.py. Desktop-only: log monitor, watchlist, the
+ * localhost dev uses a same-origin proxy. Desktop-only: log monitor, watchlist, the
  * Settings dialog, EQ auto-install detection, the update check.
  */
 
@@ -24,14 +24,12 @@ const RECENT_CHECK_FLOOR = 1000; // only items with a bulk median >= this get a 
 const RECENT_SALES_LIMIT = 8;    // recent postings pulled per recent-asks lookup
 // NPC vendor buyback estimate (CHA-based). Port of vendor_multiplier/value_pp.
 const VENDOR_SLOPE = 0.004, VENDOR_INTERCEPT = 0.584, VENDOR_CAP = 1 / 1.05;
-// Correct apex host (valid cert). "/api" via dev-proxy.py dodges CORS in dev.
+// Apex host (valid cert). "/api" routes to a same-origin proxy for local dev.
 const API_HOST = "https://tlp-auctions.com/api";
 const SERVER = "Frostreaver";    // only TLP with tlp-auctions data; no server picker needed
 const APP_VERSION = "1.4.5";
 // Identify our traffic to the API owner: every request carries this so they can
-// see/measure/rate-limit just us. It's a CUSTOM header, so it triggers a CORS
-// preflight — tlp-auctions must list "X-Client-App" in Access-Control-Allow-
-// Headers for the direct (Pages) path. Same-origin proxy requests skip preflight.
+// see/measure our usage and reach out if needed.
 const CLIENT_TAG = `EQ-Auction-Forge/${APP_VERSION}`;
 // Built-in newbie/starter junk dropped from inventory loads (exact, lowercase).
 const EXCLUDED_ITEMS = new Set([
@@ -345,7 +343,7 @@ async function idbDel(key) {
 // docs/items.txt.gz, served at the Pages root). Cached in IndexedDB so it's
 // downloaded only once, but REVALIDATED every load so a shipped DB update is
 // picked up automatically: send a conditional request with the cached copy's
-// validator (ETag on Pages, Last-Modified via dev-proxy) — unchanged → 304, use
+// validator (ETag on Pages, Last-Modified when served locally) — unchanged → 304, use
 // cache; changed → download the new one. Only works when SERVED (localhost /
 // Pages); under file:// fetch is blocked.
 async function autoLoadDb({ forceNetwork = false } = {}) {
@@ -395,7 +393,7 @@ async function autoLoadDb({ forceNetwork = false } = {}) {
   } catch (err) {
     $("dbStatus").textContent = "auto-load failed — serve via localhost";
     log("DB auto-load failed (" + (err && err.message ? err.message : err) +
-        "). Under file:// fetch is blocked — serve it (e.g. `python docs/app/dev-proxy.py`).");
+        "). Under file:// fetch is blocked — open the served app instead.");
   }
 }
 
@@ -403,15 +401,14 @@ async function autoLoadDb({ forceNetwork = false } = {}) {
 // Pricing — TLP-Auctions bulk API (mirrors probe.html / the desktop app)
 // =====================================================================
 
-// Are we running from a local dev server (dev-proxy.py)? The proxy is a
+// Are we running from a local dev server? The proxy is a
 // localhost-only crutch; on GitHub Pages we always go direct.
 function isLocalhost() {
   return ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname);
 }
 
-// Direct = the apex host (valid cert). Proxy = same-origin /api via dev-proxy.py,
-// which dodges CORS while developing (tlp-auctions hasn't enabled CORS yet). The
-// proxy is only ever used on localhost, so a Pages visitor always goes direct.
+// Direct = the apex host (valid cert). Proxy = same-origin /api for local dev.
+// The proxy is only ever used on localhost, so a Pages visitor always goes direct.
 function apiBase() {
   const cb = $("useProxy");
   return cb && cb.checked && isLocalhost() ? "/api" : API_HOST;
@@ -606,7 +603,7 @@ async function priceItems(items) {
     if (failed) {
       if (priced === 0 && noData === 0 && !(($("useProxy") || {}).checked)) {
         log("  → Every batch failed. Direct calls only work from the deployed " +
-            "origin (CORS) — on localhost run `python docs/app/dev-proxy.py` and tick 'Use local proxy'.");
+            "origin (CORS) — for local dev, serve the app and tick 'Use local proxy'.");
       } else {
         log("  → Some batches hit a transient API error. Run Price Check All again to fill the rest.");
       }

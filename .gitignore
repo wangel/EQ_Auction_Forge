@@ -6,6 +6,11 @@ __pycache__/
 dist/
 build/
 
+# Web app — local dev / backend tooling, never published to Pages
+docs/app/dev-proxy.py
+docs/app/probe.html
+docs/app/DEV_NOTES.md
+
 # PyInstaller / release packaging
 *.spec
 release_stage/
