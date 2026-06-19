@@ -31,6 +31,26 @@ const APP_VERSION = "1.4.5";
 // Identify our traffic to the API owner: every request carries this so they can
 // see/measure our usage and reach out if needed.
 const CLIENT_TAG = `EQ-Auction-Forge/${APP_VERSION}`;
+
+// Anonymous visit beacon -> our own Cloudflare Worker (records standard web-visit
+// metadata only: page/referrer/event + server-side IP/country/UA — never any
+// inventory/INI data). Set the deployed Worker subdomain below; until then the
+// placeholder check keeps it inert. Fires on the production origin only.
+const ANALYTICS_URL = "https://eqforge-analytics.YOUR-SUBDOMAIN.workers.dev/collect";
+function track(event) {
+  try {
+    if (location.hostname !== "wangel.github.io") return;     // production only
+    if (ANALYTICS_URL.includes("YOUR-SUBDOMAIN")) return;     // not configured yet
+    if (!navigator.sendBeacon) return;
+    const body = JSON.stringify({
+      event: event || "view",
+      path: location.pathname,
+      ref: document.referrer || "",
+    });
+    navigator.sendBeacon(ANALYTICS_URL, body);   // text/plain -> no CORS preflight
+  } catch { /* analytics must never break the app */ }
+}
+
 // Built-in newbie/starter junk dropped from inventory loads (exact, lowercase).
 const EXCLUDED_ITEMS = new Set([
   "backpack", "small box", "dagger", "skin of milk", "bread cakes",
@@ -619,6 +639,7 @@ async function priceItems(items) {
 
 async function priceCheckAll() {
   if (!state.auction.length) return;
+  track("pc_all");
   await priceItems(state.auction);
 }
 
@@ -1104,6 +1125,7 @@ function reportTrash(trash) {
 
 function generate() {
   if (!state.db) { log("Item DB not loaded yet — wait for it or check the connection."); return; }
+  track("generate");
   const prefix = $("prefix").value;
   const suffix = $("suffix").value.trim();
   const page = parseInt($("page").value, 10) || 2;
@@ -1280,6 +1302,7 @@ if (!isLocalhost()) {
 
 loadPrefs();    // restore saved toolbar values (lightweight Settings)
 log("Ready.");
+track("view");  // anonymous visit ping (production origin only)
 autoLoadDb();   // pull the bundled DB automatically when served (localhost/Pages)
 syncKrono();    // pull the live krono rate for the header (best-effort)
 if (!window.showOpenFilePicker) {

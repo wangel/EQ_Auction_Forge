@@ -11,6 +11,9 @@ docs/app/dev-proxy.py
 docs/app/probe.html
 docs/app/DEV_NOTES.md
 
+# Analytics Worker — local-only, deployed to my own Cloudflare account
+analytics/
+
 # PyInstaller / release packaging
 *.spec
 release_stage/
