@@ -44,6 +44,10 @@ h1 .tag {
 .topbar .sep { color: var(--border); }
 .topbar a { color: var(--blue); }
 .topbar button { padding: 3px 10px; font-size: 12px; }
+/* Ko-fi: a small outlined button — present, not pushy. Fills in on hover. */
+.topbar a.kofi { border: 1px solid #ff7a85; color: #ff9aa2; padding: 2px 9px;
+  border-radius: 4px; white-space: nowrap; }
+.topbar a.kofi:hover { background: #ff7a85; color: #1a1a1a; text-decoration: none; }
 .topbar-right { margin-left: auto; display: flex; gap: 12px; align-items: center; }
 #dbCount, #kronoInfo { color: var(--muted); }
 
