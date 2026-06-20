@@ -1,0 +1,5 @@
+User-agent: *
+Allow: /
+Disallow: /app/probe.html
+
+Sitemap: https://wangel.github.io/EQ_Auction_Forge/sitemap.xml
