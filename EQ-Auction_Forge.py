@@ -1,6 +1,12 @@
 # EQ-Auction_Forge.py
 # EQ Auction Macro Builder with price checking
 #
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 wangel. Licensed under the GNU Affero General Public
+# License v3 or later — see the LICENSE file. This program is free software:
+# you may redistribute and/or modify it, but any modified or network-hosted
+# version must make its complete source available under the same license.
+#
 # Features:
 #   - Uses items.txt.gz database for pre-computed link hashes
 #   - Per-item pricing (edit price per item in auction list)

@@ -93,7 +93,13 @@ The `items.txt.gz` file contains item data from [items.sodeq.org](https://items.
 
 ## License
 
-MIT License — see [LICENSE](LICENSE)
+**GNU Affero General Public License v3.0 or later (AGPL-3.0-or-later)** — see [LICENSE](LICENSE).
+
+Copyright (C) 2026 wangel. This is free software: use it, study it, share it, and
+change it. But if you distribute it **or run a modified version as a network
+service**, you must release your complete source under the same license. In plain
+terms: you can't take this, close the source, and sell it. Built for the EQ
+community, staying open for the EQ community.
 
 ## Support
 

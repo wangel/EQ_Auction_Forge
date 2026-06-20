@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// EQ Auction Forge — Copyright (C) 2026 wangel. GNU AGPLv3 or later (see LICENSE).
+// Hosted/modified versions must make their complete source available.
 "use strict";
 /*
  * EQ Auction Forge — browser app (live at wangel.github.io/EQ_Auction_Forge/app/).
