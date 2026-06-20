@@ -1,7 +1,7 @@
 # Parity tests
 
 The desktop app (`EQ-Auction_Forge.py`, Python/tkinter) and the web app
-(`docs/app/app.js`, JS) are two implementations of the same core selling-loop
+(`docs/app/forge.js`, JS) are two implementations of the same core selling-loop
 logic. These tests keep them honest: both run against **one shared golden
 corpus** (`tests/golden/`), so if the two ever drift on shared logic, one side
 goes red.
@@ -40,7 +40,7 @@ change if it doesn't):
 
 ```sh
 node -e '
-const fs=require("fs"), {parseInventory,makeLink}=require("./docs/app/app.js");
+const fs=require("fs"), {parseInventory,makeLink}=require("./docs/app/forge.js");
 const norm=o=>({name:o.name,location:o.location,count:o.count,id:o.id,bag_count:o.bagCount,bag_location:o.bagLocation});
 fs.writeFileSync("tests/golden/inventory.json",
   JSON.stringify(parseInventory(fs.readFileSync("tests/fixtures/parity_inventory.txt","utf8")).map(norm),null,2)+"\n");

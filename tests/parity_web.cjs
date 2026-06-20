@@ -9,7 +9,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const { parseInventory, makeLink } = require("../docs/app/app.js");
+const { parseInventory, makeLink } = require("../docs/app/forge.js");
 
 const HERE = __dirname;
 const golden = (f) => JSON.parse(fs.readFileSync(path.join(HERE, "golden", f), "utf8"));
