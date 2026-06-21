@@ -80,11 +80,7 @@ EQ item links use a special character (DC2, hex `0x12`) as a delimiter around th
 
 ## Item Database
 
-The `items.txt.gz` file contains item data from [items.sodeq.org](https://items.sodeq.org). On first run it is extracted to a per-user cache folder (`%LOCALAPPDATA%\EQAuctionForge\items.txt` on Windows). To update it:
-
-1. Download the latest item dump from [items.sodeq.org](https://items.sodeq.org)
-2. Replace `items.txt.gz` next to the app
-3. Delete the cached `items.txt` in `%LOCALAPPDATA%\EQAuctionForge\` (it will be re-extracted on next run)
+The `items.txt.gz` file contains item data from [items.sodeq.org](https://items.sodeq.org). On first run it is extracted to a per-user cache folder (`%LOCALAPPDATA%\EQAuctionForge\items.txt` on Windows). 
 
 ## Credits
 
