@@ -67,6 +67,8 @@ const state = {
   auction: [],       // right pane (curated "to post"): [{name, location, count, id, price, _priceInput}]
   invSel: new Set(), // selected inventory row indices
   aucSel: new Set(), // selected auction row indices
+  invAnchor: null,   // last-clicked inventory row index (shift-range anchor)
+  aucAnchor: null,   // last-clicked auction row index (shift-range anchor)
   invSort: { col: null, desc: false },   // inventory column sort
   aucSort: { col: null, desc: false },   // auction column sort
   kronoRate: 0,      // last krono->plat rate seen (for the Recent Postings hint)
@@ -952,6 +954,7 @@ function buildInventoryTable() {
   const body = $("invBody");
   body.innerHTML = "";
   state.invSel.clear();
+  state.invAnchor = null;
   const bagsOnly = $("invBagsOnly").checked;
   const view = state.inventory.length ? inventoryView() : [];
   if (!state.inventory.length) {
@@ -969,7 +972,7 @@ function buildInventoryTable() {
         `<td>${escapeHtml(item.name)}</td>` +
         `<td class="qty">${cnt > 1 ? "x" + cnt : ""}</td>` +
         `<td class="qty">${escapeHtml(loc)}</td>`;
-      tr.addEventListener("click", () => toggleInvSel(i, tr));
+      tr.addEventListener("click", (e) => selectRow(e, i, tr, state.invSel, "invBody", "invAnchor"));
       tr.addEventListener("dblclick", () => {
         if (addToAuction(state.inventory[i], cnt)) { log(`Added ${item.name}.`); refreshAuction(); }
       });
@@ -982,9 +985,34 @@ function buildInventoryTable() {
   $("addSelBtn").disabled = !view.length;
 }
 
-function toggleInvSel(i, tr) {
-  if (state.invSel.has(i)) { state.invSel.delete(i); tr.classList.remove("sel"); }
-  else { state.invSel.add(i); tr.classList.add("sel"); }
+// Explorer-style row selection mirroring the desktop trees' selectmode='extended':
+// plain click selects only this row, Ctrl/Cmd-click toggles, Shift-click extends a
+// range from the anchor (in visible row order). The web previously toggled on every
+// plain click, so clicking around accumulated a multi-selection — which silently
+// broke "exactly one" actions like Recent Postings.
+function selectRow(e, i, tr, sel, bodyId, anchorKey) {
+  const body = $(bodyId);
+  if (e.shiftKey && state[anchorKey] != null) {
+    const rows = [...body.querySelectorAll("tr[data-i]")];
+    const idxs = rows.map((r) => Number(r.dataset.i));
+    const a = idxs.indexOf(state[anchorKey]), b = idxs.indexOf(i);
+    if (a !== -1 && b !== -1) {
+      const [lo, hi] = a < b ? [a, b] : [b, a];
+      sel.clear();
+      rows.forEach((r) => r.classList.remove("sel"));
+      for (let k = lo; k <= hi; k++) { sel.add(idxs[k]); rows[k].classList.add("sel"); }
+      return;   // leave the anchor put so further shift-clicks extend from it
+    }
+  }
+  if (e.ctrlKey || e.metaKey) {
+    if (sel.has(i)) { sel.delete(i); tr.classList.remove("sel"); }
+    else { sel.add(i); tr.classList.add("sel"); }
+  } else {
+    sel.clear();
+    body.querySelectorAll("tr.sel").forEach((r) => r.classList.remove("sel"));
+    sel.add(i); tr.classList.add("sel");
+  }
+  state[anchorKey] = i;
 }
 
 function selectAllInv() {
@@ -1035,6 +1063,7 @@ function refreshAuction() {
   const body = $("aucBody");
   body.innerHTML = "";
   state.aucSel.clear();
+  state.aucAnchor = null;
   if (!state.auction.length) {
     body.innerHTML = `<tr><td colspan="4" class="empty">Add items from the left.</td></tr>`;
   } else {
@@ -1063,7 +1092,7 @@ function refreshAuction() {
       tr.children[2].appendChild(input);
       const tag = rowTag(item);
       if (tag) tr.classList.add(tag);
-      tr.addEventListener("click", () => toggleAucSel(i, tr));
+      tr.addEventListener("click", (e) => selectRow(e, i, tr, state.aucSel, "aucBody", "aucAnchor"));
       body.appendChild(tr);
     });
   }
@@ -1075,11 +1104,6 @@ function refreshAuction() {
   $("removeBtn").disabled = !has;
   $("clearBtn").disabled = !has;
   $("genBtn").disabled = !has;
-}
-
-function toggleAucSel(i, tr) {
-  if (state.aucSel.has(i)) { state.aucSel.delete(i); tr.classList.remove("sel"); }
-  else { state.aucSel.add(i); tr.classList.add("sel"); }
 }
 
 function removeSelectedFromAuction() {
