@@ -838,11 +838,31 @@ async function showRecentPostings(name, item = null) {
   openModal(`Recent Postings — ${name}`, wrap);
 }
 
-// Auction-pane button: recent postings for the single selected auction row.
+// The auction item matching an inventory item, by id (unique) when present, else
+// by name — same dedupe key Add uses. Returns undefined if not in the list.
+function auctionMatch(inv) {
+  const key = inv.id ? `#${inv.id}` : inv.name.toLowerCase();
+  return state.auction.find((a) => (a.id ? `#${a.id}` : a.name.toLowerCase()) === key);
+}
+
+// Recent postings for the single selected item. Prefers a single INVENTORY
+// selection (so you can look up anything you own, even if it's not on the auction
+// list), else a single AUCTION selection. Mirrors the desktop's _selected_single_name
+// (inventory-first) — and an auction click also mirror-selects the inventory row.
 function recentPostingsSelected() {
-  if (state.aucSel.size !== 1) { log("Select exactly one auction item, then Recent Postings."); return; }
-  const it = state.auction[[...state.aucSel][0]];
-  showRecentPostings(it.name, it);
+  let name, item = null;
+  if (state.invSel.size === 1) {
+    const inv = state.inventory[[...state.invSel][0]];
+    name = inv.name;
+    item = auctionMatch(inv) || null;   // pass the auction item (if any) for the price-divergence hint
+  } else if (state.aucSel.size === 1) {
+    item = state.auction[[...state.aucSel][0]];
+    name = item.name;
+  } else {
+    log("Select exactly one item (inventory or auction), then Recent Postings.");
+    return;
+  }
+  showRecentPostings(name, item);
 }
 
 // DB lookup: recent postings for ANY item by name (owned or not). Exact match
@@ -1015,6 +1035,28 @@ function selectRow(e, i, tr, sel, bodyId, anchorKey) {
   state[anchorKey] = i;
 }
 
+// Mirror an auction-row selection onto the inventory list (port of the desktop's
+// _select_inventory_by_name): single-select the matching visible inventory row and
+// scroll it into view, or clear the inventory selection if it's filtered out. Lets
+// the inventory-first Recent Postings / left-pane actions target the clicked item
+// without a second click.
+function selectInventoryByName(name) {
+  const body = $("invBody");
+  state.invSel.clear();
+  body.querySelectorAll("tr.sel").forEach((r) => r.classList.remove("sel"));
+  state.invAnchor = null;
+  const target = (name || "").toLowerCase();
+  for (const tr of body.querySelectorAll("tr[data-i]")) {
+    const it = state.inventory[Number(tr.dataset.i)];
+    if (it && it.name.toLowerCase() === target) {
+      const idx = Number(tr.dataset.i);
+      state.invSel.add(idx); tr.classList.add("sel"); state.invAnchor = idx;
+      tr.scrollIntoView({ block: "nearest" });
+      return;
+    }
+  }
+}
+
 function selectAllInv() {
   const rows = $("invBody").querySelectorAll("tr[data-i]");
   const allSelected = rows.length > 0 && state.invSel.size >= rows.length;
@@ -1092,7 +1134,10 @@ function refreshAuction() {
       tr.children[2].appendChild(input);
       const tag = rowTag(item);
       if (tag) tr.classList.add(tag);
-      tr.addEventListener("click", (e) => selectRow(e, i, tr, state.aucSel, "aucBody", "aucAnchor"));
+      tr.addEventListener("click", (e) => {
+        selectRow(e, i, tr, state.aucSel, "aucBody", "aucAnchor");
+        if (state.aucSel.size === 1) selectInventoryByName(item.name);   // mirror onto the inventory list
+      });
       body.appendChild(tr);
     });
   }
