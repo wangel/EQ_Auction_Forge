@@ -1151,19 +1151,37 @@ function isVendorTrash(item) {
   return v >= plat || (plat - v) < minProfitPlat();
 }
 
-// Log the vendor-trash items (with bag location + margin) left out of the macro.
+// Log AND pop up the vendor-trash items (with bag location + margin) left out of
+// the macro, so web users get the same prominent heads-up the desktop app gives
+// (mirrors _report_trash) instead of having to dig through the log.
 function reportTrash(trash) {
   if (!trash.length) return;
   const floor = minProfitPlat();
-  log(`${trash.length} item(s) not worth listing` +
-      (floor ? ` (profit over vendor < ${floor}p)` : ` (worth more to a vendor)`) +
-      ` — left OUT of the macro:`);
+  const reason = floor ? `profit over vendor < ${floor}p` : "worth more to a vendor";
+  log(`${trash.length} item(s) not worth listing (${reason}) — left OUT of the macro:`);
+  const rows = [];
   for (const it of trash) {
     const v = vendorPp(it), [, plat] = classifyPrice(it.price);
     const margin = v !== null ? Math.round(plat - v) : null;
+    rows.push({ name: it.name, price: it.price || "?", vendor: vendorStr(it), loc: it.location || "?" });
     log(`  VENDOR (${vendorStr(it)} vs ${it.price}${margin !== null ? `, +${margin}p` : ""}): ` +
         `${it.name} @ ${it.location || "?"}`);
   }
+  // Popup: same content as the desktop "Go vendor these" dialog. Reuse the .postings
+  // <pre> styling so it matches the rest of the modal UI.
+  const shown = rows.slice(0, 15);
+  const body = document.createElement("div");
+  const intro = document.createElement("p");
+  intro.innerHTML = `<strong>${trash.length}</strong> item(s) aren't worth listing ` +
+    `(${escapeHtml(reason)}), so they were left <strong>OUT</strong> of your macros. Go vendor them:`;
+  body.appendChild(intro);
+  const pre = document.createElement("pre");
+  pre.className = "postings";
+  let txt = shown.map((r) => `• ${r.name}: player ${r.price} / vendor ${r.vendor} — ${r.loc}`).join("\n");
+  if (rows.length > shown.length) txt += `\n…and ${rows.length - shown.length} more (see Log).`;
+  pre.textContent = txt;
+  body.appendChild(pre);
+  openModal("Go vendor these", body);
 }
 
 function generate() {

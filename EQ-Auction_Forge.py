@@ -919,7 +919,7 @@ class AuctionBuilder:
         legend.pack(fill='x', pady=(2, 0))
         ttk.Label(legend, text="Colors:", foreground='#888888',
                   font=('Consolas', 8)).pack(side='left')
-        for txt, color in (("krono", '#cc99ff'), ("vendor it", '#ff9900'),
+        for txt, color in (("krono", '#cc99ff'), ("vendor it (cut from macro)", '#ff9900'),
                            ("recent asks lower → check Recent Postings", '#ffd24d')):
             ttk.Label(legend, text=txt, foreground=color,
                       font=('Consolas', 8)).pack(side='left', padx=(6, 0))
