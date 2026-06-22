@@ -1036,7 +1036,7 @@ function closeFeedMenu() { const m = document.querySelector(".ctx-menu"); if (m)
 function showFeedMenu(ev, row) {
   ev.preventDefault();
   closeFeedMenu();
-  const { speaker, item, kind } = row.dataset;
+  const { speaker, item, kind, term } = row.dataset;
   const menu = document.createElement("div");
   menu.className = "ctx-menu";
   const add = (label, fn) => {
@@ -1048,8 +1048,8 @@ function showFeedMenu(ev, row) {
   add(`Copy  "${item}"`, () => copyText(item));
   const silenced = isSilenced(speaker);
   add(silenced ? `Unsilence ${speaker}` : `Silence ${speaker} (mute toasts)`, () => setSilenced(speaker, !silenced));
-  if (kind === "BUY" && state.watchlist.some((x) => x.toLowerCase() === item.toLowerCase())) {
-    add(`Remove "${item}" from watchlist`, () => removeFromWatchlist(item));
+  if (kind === "BUY" && term && state.watchlist.some((x) => x.toLowerCase() === term.toLowerCase())) {
+    add(`Remove "${term}" from watchlist`, () => removeFromWatchlist(term));
   }
   document.body.appendChild(menu);
   // clamp to viewport so a row near the edge doesn't push the menu offscreen
@@ -1071,11 +1071,16 @@ function showRawLine(raw) {
 }
 
 function addLead(lead, speaker, msg, raw) {
-  const { kind, tier, item } = lead;
+  const { kind, tier } = lead;
   const dir = kind === "SELL" ? "SELL TO" : "BUY FROM";
-  // Asking price: WTS for a BUY lead (seller's ask), WTB for a SELL lead (what the
-  // buyer offers). null when none was listed ("pst"/"offer").
-  const price = WL.priceFor(kind === "SELL" ? WL.buySegments(msg) : WL.sellSegments(msg), item);
+  const seg = kind === "SELL" ? WL.buySegments(msg) : WL.sellSegments(msg);
+  // For a BUY lead, lead.item is the watch *word*; show the actual listed item
+  // ("Deepwater" -> "Deepwater Vambraces") but keep the word for the remove action.
+  const term = kind === "BUY" ? lead.item : null;
+  const item = (kind === "BUY" && WL.listedItemFor(seg, term)) || lead.item;
+  // Asking price: WTS for a BUY lead (seller's ask), WTB for a SELL lead (buyer's
+  // offer). null when none was listed ("pst"/"offer").
+  const price = WL.priceFor(seg, term || item);
   const priceStr = price ? ` ${price}` : "";
   const muted = isSilenced(speaker);
   log(`★ ${kind} ${item}${priceStr} — ${speaker}: ${msg}`);
@@ -1095,6 +1100,7 @@ function addLead(lead, speaker, msg, raw) {
   const row = document.createElement("div");
   row.className = "wl-hit wl-" + kind.toLowerCase() + ((tier === "MAYBE" || muted) ? " maybe" : "");
   row.dataset.speaker = speaker; row.dataset.item = item; row.dataset.kind = kind;
+  row.dataset.term = term || "";   // watchlist word that matched (for remove)
   row.title = "Click to copy /tell · right-click for more";
   const t = new Date().toLocaleTimeString();
   row.innerHTML = `<button class="wl-plus" type="button" title="Show the raw log line">+</button>` +

@@ -179,6 +179,25 @@ function priceFor(seg, item) {
   return null;
 }
 
+// The actual item as listed (original casing) that contains a watchlist `term`,
+// so a one-word watch ("Deepwater") shows "Deepwater Vambraces" in the feed, not
+// just the word. Splits on EC's item separators, then strips a trailing quantity
+// (xN) and/or price from the matching chunk. null if not found. Display-only.
+function listedItemFor(seg, term) {
+  if (!seg) return null;
+  if (!tokenize(term).length) return null;
+  for (const chunk of seg.split(/\s*(?:,|\/\/|--|;|\|)\s*/)) {
+    if (phraseMatch(term, phraseTokenGroups(chunk))) {
+      let s = chunk.trim().replace(/^[-\s]+/, "");
+      for (let i = 0; i < 2; i++) {   // peel up to 2 trailing qty/price tokens
+        s = s.replace(/\s+(?:x\d+|\d+(?:\.\d+)?\s*(?:kr|kronos?|k|pp?|plat|m)?)$/i, "").trim();
+      }
+      return s || null;
+    }
+  }
+  return null;
+}
+
 // ===========================================================================
 // SELL direction: fuzzy IDF match of a WTB segment against my inventory.
 // ===========================================================================
@@ -379,7 +398,7 @@ const WL = {
   segments, sellSegments, buySegments, parseAuctionLine, watchlistHits,
   buildIdf, seqRatio, tokenSim, score, confidence,
   DEFAULT_ALIASES, compileAliases, expandAliases, bestSellLead, matchLine,
-  phraseGroupsWithPrice, priceFor,
+  phraseGroupsWithPrice, priceFor, listedItemFor,
 };
 
 if (typeof module !== "undefined" && module.exports) module.exports = WL;     // Node (tests)
