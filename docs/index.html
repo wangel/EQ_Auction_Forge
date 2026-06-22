@@ -109,7 +109,7 @@
     <p class="tag">I got tired of hand-typing WTS macros in the tunnel, so I made this.
       Load your bags, pull prices, get a macro full of real clickable links. Done.</p>
     <p class="sub">free, open source, one python file. no installer, no nonsense.</p>
-    <div class="badge">v1.4.6</div>
+    <div class="badge" id="verBadge">v1.4.6</div>
     <div class="cta">
       <a class="btn btn-primary" href="https://github.com/wangel/EQ_Auction_Forge/releases/latest">⬇ Download (free)</a>
       <a class="btn btn-ghost" href="app/">🌐 Try in browser (beta)</a>
@@ -260,6 +260,20 @@
        their trademark, not mine.</p>
   </div>
 </footer>
+
+<script>
+  // Keep the version badge in sync with the latest published release, so it never
+  // goes stale on its own. Falls back to the hardcoded badge text on any error
+  // (offline, GitHub API rate limit, etc.). Same "is there a newer version?"
+  // GitHub check the tool itself does.
+  fetch('https://api.github.com/repos/wangel/EQ_Auction_Forge/releases/latest')
+    .then(function (r) { return r.ok ? r.json() : Promise.reject(); })
+    .then(function (d) {
+      var b = document.getElementById('verBadge');
+      if (b && d && d.tag_name) { b.textContent = d.tag_name; }
+    })
+    .catch(function () { /* keep the hardcoded fallback */ });
+</script>
 
 </body>
 </html>
