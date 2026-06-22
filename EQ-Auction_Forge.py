@@ -796,31 +796,18 @@ class AuctionBuilder:
         ff.pack(fill='x', pady=2)
         ttk.Label(ff, text="Search:").pack(side='left')
         self.filter_var = tk.StringVar()
-        fe = ttk.Entry(ff, textvariable=self.filter_var, width=30)
+        fe = ttk.Entry(ff, textvariable=self.filter_var, width=22)
         fe.pack(side='left', padx=5)
         fe.bind('<Return>', lambda e: self._apply_filter())
         ttk.Button(ff, text="Search", command=self._apply_filter).pack(side='left')
         self.inv_only_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(ff, text="Inv only", variable=self.inv_only_var,
-                        command=self._apply_filter).pack(side='left', padx=10)
+                        command=self._apply_filter).pack(side='left', padx=(8, 0))
         # Bags only: hide equipped/bank/keyring, show just items sitting in your
         # general-inventory bags (location starts with 'General').
         self.bags_only_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(ff, text="Bags only", variable=self.bags_only_var,
                         command=self._apply_filter).pack(side='left')
-        # Your character's CHA -> drives the "Vendor pp" estimate column. Default
-        # 75 (Human baseline; base-race CHA averages ~60 but real leveled/buffed
-        # toons run higher) — editable per character.
-        ttk.Label(ff, text="CHA:").pack(side='left', padx=(10, 2))
-        self.cha_var = tk.StringVar(value=self.settings['defaults']['cha'])
-        ttk.Entry(ff, textvariable=self.cha_var, width=5).pack(side='left')
-        self.cha_var.trace_add('write', self._on_cha_change)
-        # Min profit over NPC vendor value to bother listing. Plat items whose
-        # (price - vendor value) is under this get dropped as vendor-trash.
-        ttk.Label(ff, text="Min profit:").pack(side='left', padx=(10, 2))
-        self.minprofit_var = tk.StringVar(value=self.settings['defaults']['minprofit'])
-        ttk.Entry(ff, textvariable=self.minprofit_var, width=6).pack(side='left')
-        self.minprofit_var.trace_add('write', self._on_minprofit_change)
 
         # Tree + scrollbar live in their own frame so a button row can sit
         # below them (mixing pack sides in one parent gets messy otherwise).
@@ -939,6 +926,18 @@ class AuctionBuilder:
         self.undercut_var = tk.StringVar(value=self.settings['defaults']['undercut'])
         ttk.Entry(pf, textvariable=self.undercut_var, width=4).pack(side='left')
         ttk.Label(pf, text="%").pack(side='left')
+        # CHA + Min profit live here with the other pricing controls (they drive the
+        # vendor-trash floor). CHA: character Charisma -> "Vendor pp" estimate column;
+        # default 75 (Human baseline). Min profit: plat items whose (price - vendor
+        # value) is under this get dropped as vendor-trash.
+        ttk.Label(pf, text="CHA:").pack(side='left', padx=(12, 2))
+        self.cha_var = tk.StringVar(value=self.settings['defaults']['cha'])
+        ttk.Entry(pf, textvariable=self.cha_var, width=4).pack(side='left')
+        self.cha_var.trace_add('write', self._on_cha_change)
+        ttk.Label(pf, text="Min profit:").pack(side='left', padx=(12, 2))
+        self.minprofit_var = tk.StringVar(value=self.settings['defaults']['minprofit'])
+        ttk.Entry(pf, textvariable=self.minprofit_var, width=5).pack(side='left')
+        self.minprofit_var.trace_add('write', self._on_minprofit_change)
 
         # Auction-list management (always visible)
         lbf = ttk.Frame(right)
@@ -1241,6 +1240,8 @@ Pricing: tlp-auctions.com"""
         # Feed: newest on top. '+' opens the raw log line; Type = SELL (they WTB
         # your item) / BUY (they WTS a watchlist item); tier drives row color.
         self._lm_raw_by_iid = {}  # tree row id -> raw log line, for the '+' popup
+        self._lm_key_by_iid = {}  # tree row id -> stable row key, to keep the
+                                  # selection across the rebuild a new match triggers
         fr = ttk.Frame(win)
         fr.pack(fill='both', expand=True, padx=8, pady=(0, 8))
         cols = ('exp', 'time', 'type', 'who', 'item', 'line')
@@ -1910,8 +1911,15 @@ Pricing: tlp-auctions.com"""
             return
         loud_only = self.lm_loud_only_var.get()
         silenced = self._load_silenced()
+        # A new match rebuilds the whole feed (rows get fresh iids), which would
+        # drop the user's selection mid right-click/copy. Remember the selected
+        # rows by a stable key (ts+speaker+line) and re-select them after.
+        sel_keys = {self._lm_key_by_iid.get(i) for i in self.lm_feed.selection()}
+        sel_keys.discard(None)
         self.lm_feed.delete(*self.lm_feed.get_children())
         self._lm_raw_by_iid = {}
+        self._lm_key_by_iid = {}
+        reselect = []
         for kind, tier, clock, speaker, item, line, ts in self._lm_rows:
             if loud_only and tier != 'HIGH':
                 continue
@@ -1920,6 +1928,13 @@ Pricing: tlp-auctions.com"""
                                       values=('+', clock, kind, speaker, item, line),
                                       tags=(tag,))
             self._lm_raw_by_iid[iid] = f"[{ts}] {speaker} auctions, '{line}'"
+            key = (ts, speaker, line)
+            self._lm_key_by_iid[iid] = key
+            if key in sel_keys:
+                reselect.append(iid)
+        if reselect:
+            self.lm_feed.selection_set(reselect)
+            self.lm_feed.see(reselect[0])
 
     def _lm_feed_click(self, event):
         """Click the '+' column -> raw log popup (and don't let it select/copy)."""
@@ -2003,6 +2018,7 @@ Pricing: tlp-auctions.com"""
     def _lm_clear(self):
         self._lm_rows = []
         self._lm_raw_by_iid = {}
+        self._lm_key_by_iid = {}
         if self._lm_win is not None and self._lm_win.winfo_exists():
             self.lm_feed.delete(*self.lm_feed.get_children())
 
