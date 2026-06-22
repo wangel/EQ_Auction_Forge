@@ -1003,6 +1003,7 @@ function stopMonitoring() {
   if (state.logTimer) { clearInterval(state.logTimer); state.logTimer = null; }
   $("wlToggle").textContent = "Start monitoring";
   updateWlBanner();
+  updateMonitorTitle();   // clear the paused-tab tag
   setStatus("Stopped monitoring.");
 }
 
@@ -1136,6 +1137,7 @@ function addLead(lead, speaker, msg, raw) {
   row.addEventListener("contextmenu", (e) => showFeedMenu(e, row));
   feed.insertBefore(row, feed.firstChild);
   while (feed.children.length > 50) feed.removeChild(feed.lastChild);
+  if (document.hidden && state.monitoring) { hiddenAlertCount++; updateMonitorTitle(); }
 }
 
 // Honest live/paused indicator. Visible tab -> live; hidden/minimized -> paused
@@ -1152,6 +1154,51 @@ function updateWlBanner() {
   const ago = state.lastCheckAt ? Math.round((Date.now() - state.lastCheckAt) / 1000) : 0;
   el.textContent = `● Live — last check ${ago}s ago`;
   el.className = "wl-status live";
+}
+
+// Tab-strip tag: while monitoring + backgrounded, the tab title shows it's paused
+// plus a 🔔N badge of alerts that landed while away — so a glance at the tab strip
+// tells you "oops, this was in the background" even though the banner is off-screen.
+let baseTitle = "";
+let pausedSince = 0;
+let hiddenAlertCount = 0;
+function updateMonitorTitle() {
+  if (typeof document === "undefined") return;
+  if (state.monitoring && document.hidden) {
+    const badge = hiddenAlertCount ? `🔔${hiddenAlertCount} ` : "";
+    document.title = `${badge}⏸ ${baseTitle}`;
+  } else {
+    document.title = baseTitle;
+  }
+}
+
+// Insert a divider in the feed marking a stretch where the tab was backgrounded
+// (and alerts were throttled/delayed), so the blind spot is visible in the timeline.
+function addFeedGapMarker(secs) {
+  const feed = $("wlFeed");
+  if (!feed) return;
+  const dur = secs >= 60 ? `${Math.floor(secs / 60)}m ${secs % 60}s` : `${secs}s`;
+  const div = document.createElement("div");
+  div.className = "wl-gap";
+  div.textContent = `⏸ tab was in the background for ${dur} — alerts were delayed (keep it visible / on a 2nd monitor)`;
+  feed.insertBefore(div, feed.firstChild);
+}
+
+function onVisibilityChange() {
+  if (document.hidden) {
+    if (state.monitoring) { pausedSince = Date.now(); hiddenAlertCount = 0; }
+  } else if (state.monitoring) {
+    // Resume: a backgrounded interval gets throttled or frozen by the browser and
+    // doesn't always wake cleanly — so restart the timer and force an immediate
+    // catch-up read instead of waiting on the (possibly wedged) old interval.
+    if (state.logTimer) clearInterval(state.logTimer);
+    state.logTimer = setInterval(logTick, LOG_POLL_MS);
+    const secs = pausedSince ? Math.round((Date.now() - pausedSince) / 1000) : 0;
+    pausedSince = 0;
+    logTick().then(() => { if (secs >= 8) addFeedGapMarker(secs); });   // catch up, then mark the gap
+  }
+  updateMonitorTitle();
+  updateWlBanner();
 }
 
 // Set an auction item's price to the recent median (no undercut — match the live
@@ -1833,7 +1880,7 @@ if ($("wlPickLog")) {
   if (window.showOpenFilePicker) {
     $("wlPickLog").addEventListener("click", pickLogFile);
     $("wlToggle").addEventListener("click", () => (state.monitoring ? stopMonitoring() : startMonitoring()));
-    document.addEventListener("visibilitychange", updateWlBanner);
+    document.addEventListener("visibilitychange", onVisibilityChange);
     if ($("wlTestAlert")) $("wlTestAlert").addEventListener("click", testAlert);
     restoreLogHandle();
   } else {
@@ -1854,6 +1901,7 @@ if (!isLocalhost()) {
 loadPrefs();    // restore saved toolbar values (lightweight Settings)
 loadWatchlist(); renderWatchlist();   // restore the saved watchlist
 loadSilenced();                       // restore muted auctioneers
+baseTitle = document.title;           // captured for the paused-tab title tag
 log("Ready.");
 track("view");  // anonymous visit ping (production origin only)
 autoLoadDb();   // pull the bundled DB automatically when served (localhost/Pages)
