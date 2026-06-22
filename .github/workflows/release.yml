@@ -44,6 +44,15 @@ jobs:
           }
           "version=$appver" >> $env:GITHUB_OUTPUT
 
+      - name: Verify release notes exist (fail fast, before the slow build)
+        shell: pwsh
+        run: |
+          $notes = "release_stage/NOTES_v${{ steps.ver.outputs.version }}.md"
+          if (-not (Test-Path $notes)) {
+            throw "Release notes not found: $notes -- write and commit them before tagging."
+          }
+          Write-Host "Using release notes: $notes"
+
       - name: Provision the venv build.ps1 expects (Nuitka pinned + truststore)
         shell: pwsh
         run: |
@@ -79,13 +88,6 @@ jobs:
           tag_name: ${{ github.ref_name }}
           files: EQ_Auction_Forge_v*_Windows.zip
           fail_on_unmatched_files: true
-          body: |
-            Windows standalone build (Nuitka). Unzip anywhere and run `EQ_Auction_Forge.exe`.
-
-            **Update if you're on v1.4.4 or older.** An upstream price-API change
-            will break price checking and Recent Postings on older versions; this
-            release moves to the supported endpoint and verifies TLS via the OS
-            trust store, so price checks keep working.
-
-            A VirusTotal scan ran in CI for this build (see the Actions run log
-            for the report link).
+          # Body comes from the per-version notes file (verified to exist above),
+          # so each release ships its own notes instead of a stale hardcoded blurb.
+          body_path: release_stage/NOTES_v${{ steps.ver.outputs.version }}.md

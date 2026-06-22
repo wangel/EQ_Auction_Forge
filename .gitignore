@@ -16,7 +16,10 @@ analytics/
 
 # PyInstaller / release packaging
 *.spec
-release_stage/
+# Ignore the heavy build output in release_stage, but TRACK the release notes
+# so CI (release.yml) and build.ps1 -Publish can read them as the release body.
+release_stage/*
+!release_stage/NOTES_*.md
 EQ_Auction_Forge_v*_Windows.zip
 EQ_Auction_Forge_v*_Windows/
 build_*.log
