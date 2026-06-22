@@ -1015,8 +1015,12 @@ async function logTick() {
 function addLead(lead, speaker, msg) {
   const { kind, tier, item } = lead;
   const dir = kind === "SELL" ? "SELL TO" : "BUY FROM";
-  log(`★ ${kind} ${item} — ${speaker}: ${msg}`);
-  setStatus(`${kind === "SELL" ? "Buyer" : "Seller"} for ${item}: ${speaker}`);
+  // Asking price: WTS for a BUY lead (seller's ask), WTB for a SELL lead (what the
+  // buyer offers). null when none was listed ("pst"/"offer").
+  const price = WL.priceFor(kind === "SELL" ? WL.buySegments(msg) : WL.sellSegments(msg), item);
+  const priceStr = price ? ` ${price}` : "";
+  log(`★ ${kind} ${item}${priceStr} — ${speaker}: ${msg}`);
+  setStatus(`${kind === "SELL" ? "Buyer" : "Seller"} for ${item}${priceStr}: ${speaker}`);
   if (tier === "HIGH" && notifyReady()) {
     const now = Date.now();
     if (now - (lastNotify.get(item) || 0) >= NOTIFY_COOLDOWN_MS) {
@@ -1024,7 +1028,7 @@ function addLead(lead, speaker, msg) {
       const body = kind === "SELL"
         ? `${speaker} wants to buy it — /tell ${speaker}`
         : `${speaker}: ${msg}`.slice(0, 180);
-      new Notification(`${item} — ${dir} ${speaker}`, { body });
+      new Notification(`${item}${priceStr} — ${dir} ${speaker}`, { body });
     }
   }
   const feed = $("wlFeed");
@@ -1035,6 +1039,7 @@ function addLead(lead, speaker, msg) {
   row.innerHTML = `<span class="wl-hit-t">${t}</span> ` +
     `<span class="wl-dir">${dir}</span> ` +
     `<span class="wl-hit-item">${escapeHtml(item)}</span> ` +
+    (price ? `<span class="wl-price">${escapeHtml(price)}</span> ` : "") +
     `<span class="wl-hit-who">/tell ${escapeHtml(speaker)}</span>`;
   feed.insertBefore(row, feed.firstChild);
   while (feed.children.length > 50) feed.removeChild(feed.lastChild);

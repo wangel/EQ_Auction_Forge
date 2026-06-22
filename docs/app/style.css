@@ -227,6 +227,7 @@ pre#log {
 .wl-hit:last-child { border-bottom: none; }
 .wl-hit-t { color: var(--muted); font-size: 11px; }
 .wl-hit-item { font-weight: bold; }
+.wl-price { color: var(--orange); font-weight: bold; }
 .wl-hit-who { color: var(--blue); margin-left: auto; }
 .wl-dir { font-size: 11px; font-weight: bold; border: 1px solid; border-radius: 3px; padding: 0 5px; }
 /* SELL TO = green (a buyer for my item); BUY FROM = purple (a seller of my want) */

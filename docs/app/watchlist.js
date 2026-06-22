@@ -132,6 +132,53 @@ function watchlistHits(msg, watchlist) {
   return hits;
 }
 
+// Like phraseTokenGroups, but also captures the price token that CLOSED each item
+// group — in EC's "WTS <Item> <price>, <Item2> <price2>" format that trailing
+// price is the item's ask. Display-only (not in the parity-locked matchLine).
+// Full price incl. decimals + krono suffix, since the tokenizer splits "1.5k"
+// into "1"/"5k" on the dot. Matches at a position in the lowered text.
+const PRICE_FULL_RE = /^\d+(?:\.\d+)?\s*(?:kr|kronos?|k|pp?|plat|m)?/;
+
+function phraseGroupsWithPrice(text) {
+  const groups = [];
+  let cur = [];
+  const lower = text.toLowerCase();
+  let m;
+  PHRASE_TOK_RE.lastIndex = 0;
+  while ((m = PHRASE_TOK_RE.exec(lower)) !== null) {
+    const tok = m[0];
+    if (tok === ",") { if (cur.length) { groups.push({ tokens: cur, price: null }); cur = []; } continue; }
+    if (PRICEY_RE.test(tok)) {                          // price boundary (same as the matcher)
+      const pm = lower.slice(m.index).match(PRICE_FULL_RE);   // but capture the WHOLE price
+      const price = pm ? pm[0].replace(/\s+/g, "") : tok;
+      if (cur.length) { groups.push({ tokens: cur, price }); cur = []; }
+      continue;
+    }
+    if (STOPWORDS.has(tok) || tok.length < 2) continue;
+    cur.push(tok);
+  }
+  if (cur.length) groups.push({ tokens: cur, price: null });
+  return groups;
+}
+
+// The asking price (raw token, e.g. "8k"/"500p"/"1500") for `item` within a
+// segment, or null if none was listed ("pst"/"offer"). Finds the item's phrase
+// group and returns the price that closed it.
+function priceFor(seg, item) {
+  if (!seg) return null;
+  const q = tokenize(item);
+  if (!q.length) return null;
+  const span = q.length;
+  for (const g of phraseGroupsWithPrice(seg)) {
+    for (let i = 0; i + span <= g.tokens.length; i++) {
+      let ok = true;
+      for (let k = 0; k < span; k++) { if (g.tokens[i + k] !== q[k]) { ok = false; break; } }
+      if (ok) return g.price;
+    }
+  }
+  return null;
+}
+
 // ===========================================================================
 // SELL direction: fuzzy IDF match of a WTB segment against my inventory.
 // ===========================================================================
@@ -332,6 +379,7 @@ const WL = {
   segments, sellSegments, buySegments, parseAuctionLine, watchlistHits,
   buildIdf, seqRatio, tokenSim, score, confidence,
   DEFAULT_ALIASES, compileAliases, expandAliases, bestSellLead, matchLine,
+  phraseGroupsWithPrice, priceFor,
 };
 
 if (typeof module !== "undefined" && module.exports) module.exports = WL;     // Node (tests)
