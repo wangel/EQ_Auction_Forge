@@ -80,6 +80,7 @@ const state = {
   lastCheckAt: 0,    // ms timestamp of the last successful read (for the banner)
   idf: null,         // IDF map for the fuzzy SELL matcher (built from the DB once)
   aliasPats: null,   // compiled alias patterns for SELL expansion
+  silenced: new Set(), // lowercased auctioneer names muted from toasts
 };
 
 // ----- tiny DOM helpers -----
@@ -1008,6 +1009,56 @@ async function logTick() {
   updateWlBanner();
 }
 
+// ----- silenced auctioneers (mute a spammer; still show them, greyed) ----------
+const SILENCED_KEY = "eqaf-silenced";
+function loadSilenced() {
+  try { state.silenced = new Set(JSON.parse(localStorage.getItem(SILENCED_KEY) || "[]").map((s) => String(s).toLowerCase())); }
+  catch { state.silenced = new Set(); }
+}
+function isSilenced(who) { return state.silenced.has(String(who).toLowerCase()); }
+function setSilenced(who, on) {
+  const k = String(who).toLowerCase();
+  if (on) state.silenced.add(k); else state.silenced.delete(k);
+  try { localStorage.setItem(SILENCED_KEY, JSON.stringify([...state.silenced])); } catch { /* private mode */ }
+  setStatus(`${on ? "Silenced" : "Unsilenced"} ${who}.`);
+}
+
+function copyText(s) {
+  if (navigator.clipboard) navigator.clipboard.writeText(s).then(
+    () => setStatus(`Copied: ${s.trim()}`), () => setStatus("Copy failed (clipboard blocked)."));
+  else setStatus("Clipboard not available in this browser.");
+}
+
+function closeFeedMenu() { const m = document.querySelector(".ctx-menu"); if (m) m.remove(); }
+
+// Right-click a feed row -> desktop-style menu: copy the /tell, copy the item,
+// silence/unsilence the auctioneer, and (BUY rows) remove the item from the list.
+function showFeedMenu(ev, row) {
+  ev.preventDefault();
+  closeFeedMenu();
+  const { speaker, item, kind } = row.dataset;
+  const menu = document.createElement("div");
+  menu.className = "ctx-menu";
+  const add = (label, fn) => {
+    const b = document.createElement("button"); b.type = "button"; b.textContent = label;
+    b.addEventListener("click", () => { fn(); closeFeedMenu(); });
+    menu.appendChild(b);
+  };
+  add(`Copy  /tell ${speaker}`, () => copyText(`/tell ${speaker} `));
+  add(`Copy  "${item}"`, () => copyText(item));
+  const silenced = isSilenced(speaker);
+  add(silenced ? `Unsilence ${speaker}` : `Silence ${speaker} (mute toasts)`, () => setSilenced(speaker, !silenced));
+  if (kind === "BUY" && state.watchlist.some((x) => x.toLowerCase() === item.toLowerCase())) {
+    add(`Remove "${item}" from watchlist`, () => removeFromWatchlist(item));
+  }
+  document.body.appendChild(menu);
+  // clamp to viewport so a row near the edge doesn't push the menu offscreen
+  const r = menu.getBoundingClientRect();
+  menu.style.left = Math.min(ev.clientX, window.innerWidth - r.width - 6) + "px";
+  menu.style.top = Math.min(ev.clientY, window.innerHeight - r.height - 6) + "px";
+  setTimeout(() => document.addEventListener("click", closeFeedMenu, { once: true }), 0);
+}
+
 // Render one lead {kind:'SELL'|'BUY', tier, item} into the feed (+ a toast for
 // HIGH-confidence ones). SELL = someone wants to buy what I have (green); BUY =
 // someone's selling what I want (purple). Only HIGH toasts — MAYBE is feed-only,
@@ -1019,9 +1070,10 @@ function addLead(lead, speaker, msg) {
   // buyer offers). null when none was listed ("pst"/"offer").
   const price = WL.priceFor(kind === "SELL" ? WL.buySegments(msg) : WL.sellSegments(msg), item);
   const priceStr = price ? ` ${price}` : "";
+  const muted = isSilenced(speaker);
   log(`★ ${kind} ${item}${priceStr} — ${speaker}: ${msg}`);
   setStatus(`${kind === "SELL" ? "Buyer" : "Seller"} for ${item}${priceStr}: ${speaker}`);
-  if (tier === "HIGH" && notifyReady()) {
+  if (tier === "HIGH" && !muted && notifyReady()) {
     const now = Date.now();
     if (now - (lastNotify.get(item) || 0) >= NOTIFY_COOLDOWN_MS) {
       lastNotify.set(item, now);
@@ -1034,13 +1086,17 @@ function addLead(lead, speaker, msg) {
   const feed = $("wlFeed");
   if (!feed) return;
   const row = document.createElement("div");
-  row.className = "wl-hit wl-" + kind.toLowerCase() + (tier === "MAYBE" ? " maybe" : "");
+  row.className = "wl-hit wl-" + kind.toLowerCase() + ((tier === "MAYBE" || muted) ? " maybe" : "");
+  row.dataset.speaker = speaker; row.dataset.item = item; row.dataset.kind = kind;
+  row.title = "Click to copy /tell · right-click for more";
   const t = new Date().toLocaleTimeString();
   row.innerHTML = `<span class="wl-hit-t">${t}</span> ` +
     `<span class="wl-dir">${dir}</span> ` +
     `<span class="wl-hit-item">${escapeHtml(item)}</span> ` +
     (price ? `<span class="wl-price">${escapeHtml(price)}</span> ` : "") +
     `<span class="wl-hit-who">/tell ${escapeHtml(speaker)}</span>`;
+  row.addEventListener("click", () => copyText(`/tell ${speaker} `));
+  row.addEventListener("contextmenu", (e) => showFeedMenu(e, row));
   feed.insertBefore(row, feed.firstChild);
   while (feed.children.length > 50) feed.removeChild(feed.lastChild);
 }
@@ -1749,6 +1805,7 @@ if (!isLocalhost()) {
 
 loadPrefs();    // restore saved toolbar values (lightweight Settings)
 loadWatchlist(); renderWatchlist();   // restore the saved watchlist
+loadSilenced();                       // restore muted auctioneers
 log("Ready.");
 track("view");  // anonymous visit ping (production origin only)
 autoLoadDb();   // pull the bundled DB automatically when served (localhost/Pages)
