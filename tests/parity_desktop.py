@@ -87,6 +87,24 @@ def main():
     else:
         print("PASS watchlist matcher (%d cases)" % len(wl["cases"]))
 
+    # --- SELL fuzzy IDF matcher + mixed-line match_line ---
+    sg = golden("sell.json")
+    m2 = logmon.Matcher(db_names=sg["db"], inventory_names=sg["inventory"],
+                        watchlist=sg["watchlist"], aliases=logmon.DEFAULT_ALIASES)
+    bad = 0
+    for c in sg["cases"]:
+        parsed = logmon.parse_auction_line(c["line"])
+        leads = m2.match_line(parsed[2]) if parsed else []
+        sell = next(({"tier": t[1], "item": t[3]} for t in leads if t[0] == "SELL"), None)
+        buy = sorted(t[3] for t in leads if t[0] == "BUY")
+        if sell != c["sell"] or buy != c["buy"]:
+            bad += 1
+            print("FAIL sell %r sell=%r/%r buy=%r/%r" % (c["line"], sell, c["sell"], buy, c["buy"]))
+    if bad:
+        fails += 1
+    else:
+        print("PASS SELL matcher + match_line (%d cases)" % len(sg["cases"]))
+
     print("\n%d parity check(s) FAILED" % fails if fails else "\nall parity checks passed")
     sys.exit(1 if fails else 0)
 

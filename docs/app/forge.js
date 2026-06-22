@@ -78,6 +78,8 @@ const state = {
   logTimer: null,    // setInterval id while monitoring
   monitoring: false, // tailing the log right now?
   lastCheckAt: 0,    // ms timestamp of the last successful read (for the banner)
+  idf: null,         // IDF map for the fuzzy SELL matcher (built from the DB once)
+  aliasPats: null,   // compiled alias patterns for SELL expansion
 };
 
 // ----- tiny DOM helpers -----
@@ -953,6 +955,14 @@ async function startMonitoring() {
   if (typeof Notification !== "undefined" && Notification.permission === "default") {
     await Notification.requestPermission();
   }
+  // Build the IDF index for SELL matching once (from the loaded DB). Skipped if
+  // the DB isn't ready — BUY/watchlist matching doesn't need it.
+  if (state.db && !state.idf) {
+    const t0 = performance.now();
+    state.idf = WL.buildIdf([...state.db.byName.keys()]).idf;
+    state.aliasPats = WL.compileAliases(WL.DEFAULT_ALIASES);
+    log(`Built match index: ${state.idf.size} tokens in ${Math.round(performance.now() - t0)}ms.`);
+  }
   const f = await state.logHandle.getFile();
   state.logSize = f.size;          // tail from END — no history replay
   state.monitoring = true;
@@ -981,12 +991,14 @@ async function logTick() {
       const buf = await f.slice(state.logSize).arrayBuffer();
       state.logSize = f.size;
       const text = new TextDecoder("latin1").decode(buf);   // EQ logs are ANSI
+      const candidates = state.inventory.map((i) => i.name);
       for (const raw of text.split(/\r?\n/)) {
         const parsed = WL.parseAuctionLine(raw);
         if (!parsed) continue;
-        for (const item of WL.watchlistHits(parsed.msg, state.watchlist)) {
-          addWatchHit(parsed.speaker, item, parsed.msg);
-        }
+        const leads = WL.matchLine(parsed.msg, {
+          candidates, idf: state.idf, aliasPats: state.aliasPats, watchlist: state.watchlist,
+        });
+        for (const lead of leads) addLead(lead, parsed.speaker, parsed.msg);
       }
     }
     state.lastCheckAt = Date.now();
@@ -996,26 +1008,34 @@ async function logTick() {
   updateWlBanner();
 }
 
-function addWatchHit(speaker, item, msg) {
-  log(`★ WATCH ${item} — ${speaker}: ${msg}`);
-  setStatus(`Watchlist hit: ${item} (from ${speaker})`);
-  // OS toast, throttled per item so a hot seller can't spam a dozen a minute.
-  // The feed below still records every hit.
-  if (notifyReady()) {
+// Render one lead {kind:'SELL'|'BUY', tier, item} into the feed (+ a toast for
+// HIGH-confidence ones). SELL = someone wants to buy what I have (green); BUY =
+// someone's selling what I want (purple). Only HIGH toasts — MAYBE is feed-only,
+// mirroring the desktop's loud/quiet tiers — and toasts are throttled per item.
+function addLead(lead, speaker, msg) {
+  const { kind, tier, item } = lead;
+  const dir = kind === "SELL" ? "SELL TO" : "BUY FROM";
+  log(`★ ${kind} ${item} — ${speaker}: ${msg}`);
+  setStatus(`${kind === "SELL" ? "Buyer" : "Seller"} for ${item}: ${speaker}`);
+  if (tier === "HIGH" && notifyReady()) {
     const now = Date.now();
     if (now - (lastNotify.get(item) || 0) >= NOTIFY_COOLDOWN_MS) {
       lastNotify.set(item, now);
-      new Notification(`${item} for sale in EC`, { body: `${speaker}: ${msg}`.slice(0, 180) });
+      const body = kind === "SELL"
+        ? `${speaker} wants to buy it — /tell ${speaker}`
+        : `${speaker}: ${msg}`.slice(0, 180);
+      new Notification(`${item} — ${dir} ${speaker}`, { body });
     }
   }
   const feed = $("wlFeed");
   if (!feed) return;
   const row = document.createElement("div");
-  row.className = "wl-hit";
+  row.className = "wl-hit wl-" + kind.toLowerCase() + (tier === "MAYBE" ? " maybe" : "");
   const t = new Date().toLocaleTimeString();
   row.innerHTML = `<span class="wl-hit-t">${t}</span> ` +
+    `<span class="wl-dir">${dir}</span> ` +
     `<span class="wl-hit-item">${escapeHtml(item)}</span> ` +
-    `<span class="wl-hit-who">${escapeHtml(speaker)}</span>`;
+    `<span class="wl-hit-who">/tell ${escapeHtml(speaker)}</span>`;
   feed.insertBefore(row, feed.firstChild);
   while (feed.children.length > 50) feed.removeChild(feed.lastChild);
 }

@@ -223,8 +223,13 @@ pre#log {
   margin-top: 8px; max-height: 220px; overflow: auto;
   border: 1px solid var(--border); border-radius: 4px; background: #111;
 }
-.wl-hit { padding: 4px 10px; border-bottom: 1px solid var(--border); font-size: 13px; }
+.wl-hit { padding: 4px 10px; border-bottom: 1px solid var(--border); font-size: 13px; display: flex; gap: 8px; align-items: baseline; }
 .wl-hit:last-child { border-bottom: none; }
 .wl-hit-t { color: var(--muted); font-size: 11px; }
-.wl-hit-item { color: #cc99ff; font-weight: bold; }
-.wl-hit-who { color: var(--blue); }
+.wl-hit-item { font-weight: bold; }
+.wl-hit-who { color: var(--blue); margin-left: auto; }
+.wl-dir { font-size: 11px; font-weight: bold; border: 1px solid; border-radius: 3px; padding: 0 5px; }
+/* SELL TO = green (a buyer for my item); BUY FROM = purple (a seller of my want) */
+.wl-sell .wl-dir, .wl-sell .wl-hit-item { color: var(--green); }
+.wl-buy  .wl-dir, .wl-buy  .wl-hit-item { color: #cc99ff; }
+.wl-hit.maybe { opacity: 0.6; }
