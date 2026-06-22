@@ -194,3 +194,20 @@ pre#log {
   font-size: 12px;
 }
 .log-card h2 { color: var(--muted); }
+
+/* ----- watchlist ----- */
+.beta-tag {
+  font-size: 11px; color: var(--bg); background: var(--orange);
+  border-radius: 3px; padding: 1px 6px; vertical-align: middle; font-weight: bold;
+}
+.wl-list { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+.wl-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+  padding: 3px 6px 3px 12px; font-size: 13px; color: var(--fg);
+}
+.wl-x {
+  border: none; background: transparent; color: var(--muted);
+  font-size: 16px; line-height: 1; padding: 0 4px; cursor: pointer; border-radius: 10px;
+}
+.wl-x:hover { color: #ff6666; background: rgba(255,102,102,0.12); }

@@ -171,6 +171,24 @@
       </div>
     </section>
 
+    <!-- Step 5: watchlist alerts (browser log-tail; visible-tab feature) -->
+    <section class="card">
+      <h2>5. Watchlist alerts <span class="beta-tag">beta</span></h2>
+      <p class="hint">
+        Get a notification when someone in EC tunnel is <strong>selling</strong> an
+        item on your watchlist. It reads <em>your own</em> EQ log file in the
+        browser — nothing is uploaded. <strong>Keep this tab visible</strong> (e.g.
+        on a second monitor, with EQ in borderless-windowed mode) for alerts to
+        fire; a hidden or minimized tab gets paused by the browser.
+      </p>
+      <div class="row">
+        <input type="text" id="wlInput" list="wlNames" placeholder="add an item to watch…" autocomplete="off">
+        <datalist id="wlNames"></datalist>
+        <button id="wlAddBtn" type="button">Add</button>
+      </div>
+      <div id="wlList" class="wl-list"></div>
+    </section>
+
     <pre id="log" hidden></pre>
   </main>
 
@@ -186,6 +204,7 @@
     </div>
   </div>
 
+  <script src="watchlist.js"></script>
   <script src="forge.js"></script>
 </body>
 </html>

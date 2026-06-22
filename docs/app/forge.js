@@ -72,6 +72,7 @@ const state = {
   invSort: { col: null, desc: false },   // inventory column sort
   aucSort: { col: null, desc: false },   // auction column sort
   kronoRate: 0,      // last krono->plat rate seen (for the Recent Postings hint)
+  watchlist: [],     // item names to alert on when seen WTS in EC tunnel
 };
 
 // ----- tiny DOM helpers -----
@@ -770,6 +771,94 @@ function loadPrefs() {
   if (typeof p.bagsOnly === "boolean" && $("invBagsOnly")) $("invBagsOnly").checked = p.bagsOnly;
 }
 
+// ----- watchlist: items to be alerted on when someone WTSs them in EC tunnel ---
+// Stored as canonical item names (free text allowed; autocomplete suggests DB
+// names). Persisted locally, like prefs — nothing leaves the machine. The match
+// engine is docs/app/watchlist.js (WL.watchlistHits), parity-locked to desktop.
+const WATCHLIST_KEY = "eqaf-watchlist";
+
+function loadWatchlist() {
+  let arr;
+  try { arr = JSON.parse(localStorage.getItem(WATCHLIST_KEY) || "[]"); } catch { arr = []; }
+  state.watchlist = Array.isArray(arr) ? arr.filter((x) => typeof x === "string" && x.trim()) : [];
+}
+function saveWatchlist() {
+  try { localStorage.setItem(WATCHLIST_KEY, JSON.stringify(state.watchlist)); } catch { /* private mode */ }
+}
+
+function addToWatchlist(name) {
+  const n = (name || "").trim();
+  if (n.length < 2) return false;
+  if (state.watchlist.some((x) => x.toLowerCase() === n.toLowerCase())) {  // case-insensitive dedupe
+    setStatus(`"${n}" is already on your watchlist.`);
+    return false;
+  }
+  state.watchlist.push(n);
+  state.watchlist.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+  saveWatchlist();
+  renderWatchlist();
+  setStatus(`Added "${n}" to watchlist.`);
+  log(`Watchlist + ${n}`);
+  return true;
+}
+
+function removeFromWatchlist(name) {
+  const i = state.watchlist.findIndex((x) => x === name);
+  if (i === -1) return;
+  state.watchlist.splice(i, 1);
+  saveWatchlist();
+  renderWatchlist();
+  setStatus(`Removed "${name}" from watchlist.`);
+  log(`Watchlist − ${name}`);
+}
+
+function renderWatchlist() {
+  const box = $("wlList");
+  if (!box) return;
+  box.innerHTML = "";
+  if (!state.watchlist.length) {
+    const empty = document.createElement("span");
+    empty.className = "hint";
+    empty.textContent = "No items yet — add items you want to be alerted about.";
+    box.appendChild(empty);
+    return;
+  }
+  for (const name of state.watchlist) {
+    const chip = document.createElement("span");
+    chip.className = "wl-chip";
+    const label = document.createElement("span");
+    label.textContent = name;
+    const x = document.createElement("button");
+    x.type = "button";
+    x.className = "wl-x";
+    x.title = `Remove ${name}`;
+    x.textContent = "×";
+    x.addEventListener("click", () => removeFromWatchlist(name));
+    chip.appendChild(label);
+    chip.appendChild(x);
+    box.appendChild(chip);
+  }
+}
+
+// Populate the autocomplete datalist with up to 20 DB names matching the current
+// input (a full 133k-option datalist would be unusably slow).
+function updateWatchlistAutocomplete() {
+  const dl = $("wlNames");
+  if (!dl || !state.db) return;
+  const q = $("wlInput").value.trim().toLowerCase();
+  dl.innerHTML = "";
+  if (q.length < 2) return;
+  let added = 0;
+  for (const n of state.db.byName.keys()) {
+    if (n.toLowerCase().includes(q)) {
+      const opt = document.createElement("option");
+      opt.value = n;
+      dl.appendChild(opt);
+      if (++added >= 20) break;
+    }
+  }
+}
+
 // Set an auction item's price to the recent median (no undercut — match the live
 // market, don't undercut it). Port of _use_recent_median (auction-list case).
 function useRecentMedian(item, price) {
@@ -1423,6 +1512,15 @@ $("copyBtn").addEventListener("click", copyMacros);
 PREF_IDS.forEach((id) => { const el = $(id); if (el) el.addEventListener("change", savePrefs); });
 $("invBagsOnly").addEventListener("change", savePrefs);
 
+// Watchlist controls
+if ($("wlInput")) {
+  $("wlInput").addEventListener("input", updateWatchlistAutocomplete);
+  $("wlInput").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); if (addToWatchlist($("wlInput").value)) $("wlInput").value = ""; }
+  });
+  $("wlAddBtn").addEventListener("click", () => { if (addToWatchlist($("wlInput").value)) $("wlInput").value = ""; });
+}
+
 // The dev proxy only exists on localhost — hide its toggle entirely on Pages so
 // a visitor never sees (or ticks) a dead control.
 if (!isLocalhost()) {
@@ -1433,6 +1531,7 @@ if (!isLocalhost()) {
 { const av = $("appVersion"); if (av) av.textContent = "v" + APP_VERSION; }  // single source of truth
 
 loadPrefs();    // restore saved toolbar values (lightweight Settings)
+loadWatchlist(); renderWatchlist();   // restore the saved watchlist
 log("Ready.");
 track("view");  // anonymous visit ping (production origin only)
 autoLoadDb();   // pull the bundled DB automatically when served (localhost/Pages)
