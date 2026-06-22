@@ -870,6 +870,28 @@ function updateWatchlistAutocomplete() {
 // live/paused banner rather than pretending to work in the background. Reading is
 // incremental (seek to the last byte offset), so even a multi-GB log is cheap.
 const LOG_POLL_MS = 3000;
+const NOTIFY_COOLDOWN_MS = 60000;   // don't re-toast the same item within a minute
+const lastNotify = new Map();       // item name -> last OS-notification timestamp
+
+function notifyReady() {
+  return typeof Notification !== "undefined" && Notification.permission === "granted";
+}
+
+// Explicit "does this work?" button — also the clean way to trigger the browser's
+// permission prompt (auto-requesting on Start is easy to dismiss without noticing).
+async function testAlert() {
+  if (typeof Notification === "undefined") { setStatus("This browser has no notifications API."); return; }
+  let perm = Notification.permission;
+  if (perm === "default") perm = await Notification.requestPermission();
+  if (perm === "granted") {
+    new Notification("EQ Auction Forge — test alert", {
+      body: "Notifications work. You'll get one of these when a watchlist item is up for sale.",
+    });
+    setStatus("Test notification sent.");
+  } else {
+    setStatus("Notifications are blocked — click the padlock in the address bar → allow notifications for this site.");
+  }
+}
 
 // Tiny IndexedDB key/value store, just to persist the FileSystemFileHandle so the
 // user doesn't re-pick the log every session (localStorage can't hold a handle).
@@ -977,8 +999,14 @@ async function logTick() {
 function addWatchHit(speaker, item, msg) {
   log(`★ WATCH ${item} — ${speaker}: ${msg}`);
   setStatus(`Watchlist hit: ${item} (from ${speaker})`);
-  if (typeof Notification !== "undefined" && Notification.permission === "granted") {
-    new Notification(`${item} for sale in EC`, { body: `${speaker}: ${msg}`.slice(0, 180) });
+  // OS toast, throttled per item so a hot seller can't spam a dozen a minute.
+  // The feed below still records every hit.
+  if (notifyReady()) {
+    const now = Date.now();
+    if (now - (lastNotify.get(item) || 0) >= NOTIFY_COOLDOWN_MS) {
+      lastNotify.set(item, now);
+      new Notification(`${item} for sale in EC`, { body: `${speaker}: ${msg}`.slice(0, 180) });
+    }
   }
   const feed = $("wlFeed");
   if (!feed) return;
@@ -1677,6 +1705,7 @@ if ($("wlPickLog")) {
     $("wlPickLog").addEventListener("click", pickLogFile);
     $("wlToggle").addEventListener("click", () => (state.monitoring ? stopMonitoring() : startMonitoring()));
     document.addEventListener("visibilitychange", updateWlBanner);
+    if ($("wlTestAlert")) $("wlTestAlert").addEventListener("click", testAlert);
     restoreLogHandle();
   } else {
     const note = $("wlMonitorRow");
