@@ -867,6 +867,28 @@ function updateWatchlistAutocomplete() {
   }
 }
 
+// ----- view toggle: Macro Builder <-> Live Monitor (shared state, one page) -----
+const VIEW_KEY = "eqaf-view";
+function setView(mode) {
+  const monitor = mode === "monitor";
+  if ($("builderView")) $("builderView").hidden = monitor;
+  if ($("monitorView")) $("monitorView").hidden = !monitor;
+  if ($("tabBuilder")) $("tabBuilder").classList.toggle("active", !monitor);
+  if ($("tabMonitor")) $("tabMonitor").classList.toggle("active", monitor);
+  try { localStorage.setItem(VIEW_KEY, mode); } catch { /* private mode */ }
+  if (monitor) updateMonitorInvNote();
+}
+// SELL matching needs the inventory; surface its state in the monitor view so the
+// dependency is obvious (and offer to load it without switching back to Builder).
+function updateMonitorInvNote() {
+  const el = $("wlInvNote");
+  if (!el) return;
+  const n = state.inventory.length;
+  el.textContent = n ? `Inventory loaded: ${n} items — SELL alerts active.`
+                     : "SELL alerts (a buyer for your gear) need your inventory loaded.";
+  el.style.color = n ? "var(--green)" : "";
+}
+
 // ----- log tailer: watchlist alerts from your own EQ log (visible-tab feature) --
 // A browser tab only runs full-rate timers while VISIBLE; hidden/minimized it's
 // throttled hard (measured 46s gaps). So this is honest about its state via the
@@ -1738,6 +1760,7 @@ $("invFile").addEventListener("change", async (e) => {
     $("invStatus").textContent = `${state.inventory.length} items`;
     log(`Inventory: ${state.inventory.length} items. Select items and Add them to the auction list →`);
     buildInventoryTable();
+    updateMonitorInvNote();
   } catch (err) {
     $("invStatus").textContent = "failed";
     log("Inventory load failed: " + (err && err.message ? err.message : err));
@@ -1792,6 +1815,16 @@ if ($("wlInput")) {
     if (e.key === "Enter") { e.preventDefault(); if (addToWatchlist($("wlInput").value)) $("wlInput").value = ""; }
   });
   $("wlAddBtn").addEventListener("click", () => { if (addToWatchlist($("wlInput").value)) $("wlInput").value = ""; });
+}
+
+// View toggle (Macro Builder <-> Live Monitor)
+if ($("tabBuilder")) {
+  $("tabBuilder").addEventListener("click", () => setView("builder"));
+  $("tabMonitor").addEventListener("click", () => setView("monitor"));
+  if ($("wlLoadInv")) $("wlLoadInv").addEventListener("click", () => $("invFile").click());
+  let savedView = "builder";
+  try { savedView = localStorage.getItem(VIEW_KEY) || "builder"; } catch { /* private mode */ }
+  setView(savedView);
 }
 
 // Watchlist monitor (FSA log tailer). Hide the controls entirely where the File

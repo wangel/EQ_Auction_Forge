@@ -195,6 +195,18 @@ pre#log {
 }
 .log-card h2 { color: var(--muted); }
 
+/* ----- view toggle (Macro Builder / Live Monitor) ----- */
+.viewtabs {
+  display: flex; gap: 4px; margin: 0 0 16px; padding: 4px;
+  background: #222; border: 1px solid var(--border); border-radius: 8px; width: fit-content;
+}
+.viewtab {
+  border: none; background: none; color: var(--muted); cursor: pointer;
+  padding: 7px 18px; border-radius: 6px; font: inherit; font-weight: bold;
+}
+.viewtab:hover { color: var(--fg); }
+.viewtab.active { background: var(--panel); color: var(--green); }
+
 /* ----- watchlist ----- */
 .beta-tag {
   font-size: 11px; color: var(--bg); background: var(--orange);

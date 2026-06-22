@@ -30,6 +30,12 @@
   </header>
 
   <main>
+    <div class="viewtabs">
+      <button id="tabBuilder" class="viewtab active" type="button">🔨 Macro Builder</button>
+      <button id="tabMonitor" class="viewtab" type="button">📡 Live Monitor</button>
+    </div>
+
+    <div id="builderView">
     <!-- Step 1: load the two data files -->
     <section class="card">
       <h2>1. Load files</h2>
@@ -171,9 +177,12 @@
       </div>
     </section>
 
-    <!-- Step 5: watchlist alerts (browser log-tail; visible-tab feature) -->
+    </div><!-- /builderView -->
+
+    <!-- Live Monitor view (browser log-tail; visible-tab feature) -->
+    <div id="monitorView" hidden>
     <section class="card">
-      <h2>5. Watchlist alerts <span class="beta-tag">beta</span></h2>
+      <h2>Live EC Tunnel Monitor <span class="beta-tag">beta</span></h2>
       <p class="hint">
         Two kinds of EC-tunnel alert: someone <strong style="color:#00ff66">wanting
         to buy</strong> an item you have (needs your inventory loaded above), or
@@ -183,6 +192,10 @@
         second monitor, with EQ in borderless-windowed mode) for alerts to fire; a
         hidden or minimized tab gets paused by the browser.
       </p>
+      <div class="row">
+        <span class="hint" id="wlInvNote">SELL alerts (a buyer for your gear) need your inventory loaded.</span>
+        <button id="wlLoadInv" type="button">Load inventory…</button>
+      </div>
       <div class="row">
         <input type="text" id="wlInput" list="wlNames" placeholder="add an item to watch…" autocomplete="off">
         <datalist id="wlNames"></datalist>
@@ -199,6 +212,7 @@
       <div id="wlStatus" class="wl-status">Not monitoring</div>
       <div id="wlFeed" class="wl-feed" hidden></div>
     </section>
+    </div><!-- /monitorView -->
 
     <pre id="log" hidden></pre>
   </main>
