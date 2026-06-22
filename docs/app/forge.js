@@ -999,7 +999,7 @@ async function logTick() {
         const leads = WL.matchLine(parsed.msg, {
           candidates, idf: state.idf, aliasPats: state.aliasPats, watchlist: state.watchlist,
         });
-        for (const lead of leads) addLead(lead, parsed.speaker, parsed.msg);
+        for (const lead of leads) addLead(lead, parsed.speaker, parsed.msg, raw);
       }
     }
     state.lastCheckAt = Date.now();
@@ -1063,7 +1063,14 @@ function showFeedMenu(ev, row) {
 // HIGH-confidence ones). SELL = someone wants to buy what I have (green); BUY =
 // someone's selling what I want (purple). Only HIGH toasts — MAYBE is feed-only,
 // mirroring the desktop's loud/quiet tiers — and toasts are throttled per item.
-function addLead(lead, speaker, msg) {
+function showRawLine(raw) {
+  const pre = document.createElement("pre");
+  pre.className = "raw-line";
+  pre.textContent = raw;
+  openModal("Raw auction line", pre);
+}
+
+function addLead(lead, speaker, msg, raw) {
   const { kind, tier, item } = lead;
   const dir = kind === "SELL" ? "SELL TO" : "BUY FROM";
   // Asking price: WTS for a BUY lead (seller's ask), WTB for a SELL lead (what the
@@ -1090,11 +1097,13 @@ function addLead(lead, speaker, msg) {
   row.dataset.speaker = speaker; row.dataset.item = item; row.dataset.kind = kind;
   row.title = "Click to copy /tell · right-click for more";
   const t = new Date().toLocaleTimeString();
-  row.innerHTML = `<span class="wl-hit-t">${t}</span> ` +
+  row.innerHTML = `<button class="wl-plus" type="button" title="Show the raw log line">+</button>` +
+    `<span class="wl-hit-t">${t}</span> ` +
     `<span class="wl-dir">${dir}</span> ` +
     `<span class="wl-hit-item">${escapeHtml(item)}</span> ` +
     (price ? `<span class="wl-price">${escapeHtml(price)}</span> ` : "") +
     `<span class="wl-hit-who">/tell ${escapeHtml(speaker)}</span>`;
+  row.querySelector(".wl-plus").addEventListener("click", (e) => { e.stopPropagation(); showRawLine(raw); });
   row.addEventListener("click", () => copyText(`/tell ${speaker} `));
   row.addEventListener("contextmenu", (e) => showFeedMenu(e, row));
   feed.insertBefore(row, feed.firstChild);

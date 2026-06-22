@@ -223,7 +223,14 @@ pre#log {
   margin-top: 8px; max-height: 220px; overflow: auto;
   border: 1px solid var(--border); border-radius: 4px; background: #111;
 }
-.wl-hit { padding: 4px 10px; border-bottom: 1px solid var(--border); font-size: 13px; display: flex; gap: 8px; align-items: baseline; }
+.wl-hit { padding: 4px 10px; border-bottom: 1px solid var(--border); font-size: 13px; display: flex; gap: 8px; align-items: center; }
+.wl-plus {
+  flex: none; width: 18px; height: 18px; line-height: 1; padding: 0;
+  border: 1px solid var(--border); border-radius: 3px; background: #222;
+  color: var(--muted); cursor: pointer; font-size: 13px;
+}
+.wl-plus:hover { background: #333; color: var(--fg); }
+.raw-line { white-space: pre-wrap; word-break: break-word; margin: 0; color: var(--fg); font-size: 13px; }
 .wl-hit:last-child { border-bottom: none; }
 .wl-hit-t { color: var(--muted); font-size: 11px; }
 .wl-hit-item { font-weight: bold; }
