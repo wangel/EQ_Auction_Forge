@@ -187,6 +187,14 @@
         <button id="wlAddBtn" type="button">Add</button>
       </div>
       <div id="wlList" class="wl-list"></div>
+
+      <div class="row wl-monitor-row" id="wlMonitorRow">
+        <button id="wlPickLog" type="button" title="Pick your EQ log file (eqlog_&lt;char&gt;_&lt;server&gt;.txt). Stays on your machine.">Pick EQ log file…</button>
+        <span class="hint" id="wlLogName">no log file picked</span>
+        <button id="wlToggle" type="button" disabled>Start monitoring</button>
+      </div>
+      <div id="wlStatus" class="wl-status">Not monitoring</div>
+      <div id="wlFeed" class="wl-feed" hidden></div>
     </section>
 
     <pre id="log" hidden></pre>

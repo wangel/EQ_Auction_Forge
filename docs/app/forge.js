@@ -73,6 +73,11 @@ const state = {
   aucSort: { col: null, desc: false },   // auction column sort
   kronoRate: 0,      // last krono->plat rate seen (for the Recent Postings hint)
   watchlist: [],     // item names to alert on when seen WTS in EC tunnel
+  logHandle: null,   // FileSystemFileHandle for the EQ log (persisted in IndexedDB)
+  logSize: 0,        // last byte offset read (tail-from-end)
+  logTimer: null,    // setInterval id while monitoring
+  monitoring: false, // tailing the log right now?
+  lastCheckAt: 0,    // ms timestamp of the last successful read (for the banner)
 };
 
 // ----- tiny DOM helpers -----
@@ -859,6 +864,150 @@ function updateWatchlistAutocomplete() {
   }
 }
 
+// ----- log tailer: watchlist alerts from your own EQ log (visible-tab feature) --
+// A browser tab only runs full-rate timers while VISIBLE; hidden/minimized it's
+// throttled hard (measured 46s gaps). So this is honest about its state via the
+// live/paused banner rather than pretending to work in the background. Reading is
+// incremental (seek to the last byte offset), so even a multi-GB log is cheap.
+const LOG_POLL_MS = 3000;
+
+// Tiny IndexedDB key/value store, just to persist the FileSystemFileHandle so the
+// user doesn't re-pick the log every session (localStorage can't hold a handle).
+function idbOpen() {
+  return new Promise((res, rej) => {
+    const r = indexedDB.open("eqaf", 1);
+    r.onupgradeneeded = () => r.result.createObjectStore("kv");
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+}
+async function idbGet(key) {
+  const db = await idbOpen();
+  return new Promise((res, rej) => {
+    const q = db.transaction("kv", "readonly").objectStore("kv").get(key);
+    q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error);
+  });
+}
+async function idbPut(key, val) {
+  const db = await idbOpen();
+  return new Promise((res, rej) => {
+    const tx = db.transaction("kv", "readwrite");
+    tx.objectStore("kv").put(val, key);
+    tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error);
+  });
+}
+
+async function pickLogFile() {
+  if (!window.showOpenFilePicker) { setStatus("Live alerts need Chrome/Edge (File System Access)."); return; }
+  try {
+    const [h] = await window.showOpenFilePicker({ multiple: false });
+    state.logHandle = h;
+    try { await idbPut("logHandle", h); } catch { /* private mode */ }
+    $("wlToggle").disabled = false;
+    setStatus(`Log file: ${h.name}. Click Start monitoring.`);
+    updateLogName();
+  } catch { /* user cancelled */ }
+}
+
+// On load, re-attach the saved handle (permission is re-checked on Start, which is
+// the user gesture the browser requires to re-grant file access).
+async function restoreLogHandle() {
+  if (!window.showOpenFilePicker) return;
+  try {
+    const h = await idbGet("logHandle");
+    if (h) { state.logHandle = h; $("wlToggle").disabled = false; updateLogName(); }
+  } catch { /* ignore */ }
+}
+
+function updateLogName() {
+  const el = $("wlLogName");
+  if (el) el.textContent = state.logHandle ? state.logHandle.name : "no log file picked";
+}
+
+async function startMonitoring() {
+  if (!state.logHandle) { setStatus("Pick your EQ log file first."); return; }
+  const perm = await state.logHandle.requestPermission({ mode: "read" });
+  if (perm !== "granted") { setStatus("Permission to read the log was denied."); return; }
+  if (typeof Notification !== "undefined" && Notification.permission === "default") {
+    await Notification.requestPermission();
+  }
+  const f = await state.logHandle.getFile();
+  state.logSize = f.size;          // tail from END — no history replay
+  state.monitoring = true;
+  state.lastCheckAt = Date.now();
+  state.logTimer = setInterval(logTick, LOG_POLL_MS);
+  $("wlToggle").textContent = "Stop monitoring";
+  $("wlFeed").hidden = false;
+  updateWlBanner();
+  setStatus(`Monitoring ${state.logHandle.name} for watchlist sales.`);
+  log(`Watchlist monitor: tailing ${state.logHandle.name} from end (${f.size} bytes).`);
+}
+
+function stopMonitoring() {
+  state.monitoring = false;
+  if (state.logTimer) { clearInterval(state.logTimer); state.logTimer = null; }
+  $("wlToggle").textContent = "Start monitoring";
+  updateWlBanner();
+  setStatus("Stopped monitoring.");
+}
+
+async function logTick() {
+  try {
+    const f = await state.logHandle.getFile();
+    if (f.size < state.logSize) state.logSize = 0;       // file rotated/truncated
+    if (f.size > state.logSize) {
+      const buf = await f.slice(state.logSize).arrayBuffer();
+      state.logSize = f.size;
+      const text = new TextDecoder("latin1").decode(buf);   // EQ logs are ANSI
+      for (const raw of text.split(/\r?\n/)) {
+        const parsed = WL.parseAuctionLine(raw);
+        if (!parsed) continue;
+        for (const item of WL.watchlistHits(parsed.msg, state.watchlist)) {
+          addWatchHit(parsed.speaker, item, parsed.msg);
+        }
+      }
+    }
+    state.lastCheckAt = Date.now();
+  } catch (e) {
+    log("Watchlist monitor read error: " + e);
+  }
+  updateWlBanner();
+}
+
+function addWatchHit(speaker, item, msg) {
+  log(`★ WATCH ${item} — ${speaker}: ${msg}`);
+  setStatus(`Watchlist hit: ${item} (from ${speaker})`);
+  if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+    new Notification(`${item} for sale in EC`, { body: `${speaker}: ${msg}`.slice(0, 180) });
+  }
+  const feed = $("wlFeed");
+  if (!feed) return;
+  const row = document.createElement("div");
+  row.className = "wl-hit";
+  const t = new Date().toLocaleTimeString();
+  row.innerHTML = `<span class="wl-hit-t">${t}</span> ` +
+    `<span class="wl-hit-item">${escapeHtml(item)}</span> ` +
+    `<span class="wl-hit-who">${escapeHtml(speaker)}</span>`;
+  feed.insertBefore(row, feed.firstChild);
+  while (feed.children.length > 50) feed.removeChild(feed.lastChild);
+}
+
+// Honest live/paused indicator. Visible tab -> live; hidden/minimized -> paused
+// (the browser throttles us, so we say so instead of silently missing alerts).
+function updateWlBanner() {
+  const el = $("wlStatus");
+  if (!el) return;
+  if (!state.monitoring) { el.textContent = "Not monitoring"; el.className = "wl-status"; return; }
+  if (typeof document !== "undefined" && document.hidden) {
+    el.textContent = "⏸ Paused — tab not visible. Bring it to the foreground (or a 2nd monitor) to resume alerts.";
+    el.className = "wl-status paused";
+    return;
+  }
+  const ago = state.lastCheckAt ? Math.round((Date.now() - state.lastCheckAt) / 1000) : 0;
+  el.textContent = `● Live — last check ${ago}s ago`;
+  el.className = "wl-status live";
+}
+
 // Set an auction item's price to the recent median (no undercut — match the live
 // market, don't undercut it). Port of _use_recent_median (auction-list case).
 function useRecentMedian(item, price) {
@@ -1519,6 +1668,20 @@ if ($("wlInput")) {
     if (e.key === "Enter") { e.preventDefault(); if (addToWatchlist($("wlInput").value)) $("wlInput").value = ""; }
   });
   $("wlAddBtn").addEventListener("click", () => { if (addToWatchlist($("wlInput").value)) $("wlInput").value = ""; });
+}
+
+// Watchlist monitor (FSA log tailer). Hide the controls entirely where the File
+// System Access API is missing (Firefox/Safari) — show a one-line note instead.
+if ($("wlPickLog")) {
+  if (window.showOpenFilePicker) {
+    $("wlPickLog").addEventListener("click", pickLogFile);
+    $("wlToggle").addEventListener("click", () => (state.monitoring ? stopMonitoring() : startMonitoring()));
+    document.addEventListener("visibilitychange", updateWlBanner);
+    restoreLogHandle();
+  } else {
+    const note = $("wlMonitorRow");
+    if (note) note.innerHTML = '<span class="hint">Live alerts need a Chromium browser (Chrome/Edge) for file access. Your watchlist still saves here.</span>';
+  }
 }
 
 // The dev proxy only exists on localhost — hide its toggle entirely on Pages so

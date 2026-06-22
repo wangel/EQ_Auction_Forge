@@ -211,3 +211,20 @@ pre#log {
   font-size: 16px; line-height: 1; padding: 0 4px; cursor: pointer; border-radius: 10px;
 }
 .wl-x:hover { color: #ff6666; background: rgba(255,102,102,0.12); }
+
+.wl-monitor-row { margin-top: 12px; }
+.wl-status {
+  font-size: 13px; padding: 6px 10px; border-radius: 4px; margin: 8px 0 0;
+  background: #222; color: var(--muted); border: 1px solid var(--border);
+}
+.wl-status.live   { color: var(--green);  border-color: rgba(0,255,102,0.4); }
+.wl-status.paused { color: var(--orange); border-color: rgba(255,153,0,0.4); }
+.wl-feed {
+  margin-top: 8px; max-height: 220px; overflow: auto;
+  border: 1px solid var(--border); border-radius: 4px; background: #111;
+}
+.wl-hit { padding: 4px 10px; border-bottom: 1px solid var(--border); font-size: 13px; }
+.wl-hit:last-child { border-bottom: none; }
+.wl-hit-t { color: var(--muted); font-size: 11px; }
+.wl-hit-item { color: #cc99ff; font-weight: bold; }
+.wl-hit-who { color: var(--blue); }
