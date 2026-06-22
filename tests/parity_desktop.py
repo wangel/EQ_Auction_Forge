@@ -69,6 +69,24 @@ def main():
     else:
         print("PASS make_link (%d cases)" % len(cases))
 
+    # --- watchlist matcher (exact-phrase BUY/watchlist hits) ---
+    import logmon
+    wl = golden("watchlist.json")
+    m = logmon.Matcher(db_names=wl["watchlist"], inventory_names=[],
+                       watchlist=wl["watchlist"], aliases={})
+    bad = 0
+    for c in wl["cases"]:
+        parsed = logmon.parse_auction_line(c["line"])
+        hits = sorted(h[2] for h in m._watchlist_hits(
+            logmon.sell_segments(parsed[2]))) if parsed else []
+        if hits != c["buy_hits"]:
+            bad += 1
+            print("FAIL watchlist %r got %r want %r" % (c["line"], hits, c["buy_hits"]))
+    if bad:
+        fails += 1
+    else:
+        print("PASS watchlist matcher (%d cases)" % len(wl["cases"]))
+
     print("\n%d parity check(s) FAILED" % fails if fails else "\nall parity checks passed")
     sys.exit(1 if fails else 0)
 
