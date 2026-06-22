@@ -1007,7 +1007,11 @@ function stopMonitoring() {
   setStatus("Stopped monitoring.");
 }
 
-async function logTick() {
+// catchUp=true marks a post-background backlog read: lines still go to the feed
+// (so you see what you missed) but they DON'T toast — a stale 3-min-old auction
+// you can't act on shouldn't ping. Returns how many matches it added.
+async function logTick(catchUp = false) {
+  let added = 0;
   try {
     const f = await state.logHandle.getFile();
     if (f.size < state.logSize) state.logSize = 0;       // file rotated/truncated
@@ -1022,7 +1026,7 @@ async function logTick() {
         const leads = WL.matchLine(parsed.msg, {
           candidates, idf: state.idf, aliasPats: state.aliasPats, watchlist: state.watchlist,
         });
-        for (const lead of leads) addLead(lead, parsed.speaker, parsed.msg, raw);
+        for (const lead of leads) { addLead(lead, parsed.speaker, parsed.msg, raw, catchUp); added++; }
       }
     }
     state.lastCheckAt = Date.now();
@@ -1030,6 +1034,7 @@ async function logTick() {
     log("Watchlist monitor read error: " + e);
   }
   updateWlBanner();
+  return added;
 }
 
 // ----- silenced auctioneers (mute a spammer; still show them, greyed) ----------
@@ -1093,7 +1098,7 @@ function showRawLine(raw) {
   openModal("Raw auction line", pre);
 }
 
-function addLead(lead, speaker, msg, raw) {
+function addLead(lead, speaker, msg, raw, stale) {
   const { kind, tier } = lead;
   const dir = kind === "SELL" ? "SELL TO" : "BUY FROM";
   const seg = kind === "SELL" ? WL.buySegments(msg) : WL.sellSegments(msg);
@@ -1108,7 +1113,7 @@ function addLead(lead, speaker, msg, raw) {
   const muted = isSilenced(speaker);
   log(`★ ${kind} ${item}${priceStr} — ${speaker}: ${msg}`);
   setStatus(`${kind === "SELL" ? "Buyer" : "Seller"} for ${item}${priceStr}: ${speaker}`);
-  if (tier === "HIGH" && !muted && notifyReady()) {
+  if (tier === "HIGH" && !muted && !stale && notifyReady()) {
     const now = Date.now();
     if (now - (lastNotify.get(item) || 0) >= NOTIFY_COOLDOWN_MS) {
       lastNotify.set(item, now);
@@ -1174,13 +1179,14 @@ function updateMonitorTitle() {
 
 // Insert a divider in the feed marking a stretch where the tab was backgrounded
 // (and alerts were throttled/delayed), so the blind spot is visible in the timeline.
-function addFeedGapMarker(secs) {
+function addFeedGapMarker(secs, n = 0) {
   const feed = $("wlFeed");
   if (!feed) return;
   const dur = secs >= 60 ? `${Math.floor(secs / 60)}m ${secs % 60}s` : `${secs}s`;
+  const caught = n ? `caught up — ${n} match${n === 1 ? "" : "es"} while away (below)` : "caught up — nothing missed";
   const div = document.createElement("div");
   div.className = "wl-gap";
-  div.textContent = `⏸ tab was in the background for ${dur} — alerts were delayed (keep it visible / on a 2nd monitor)`;
+  div.textContent = `⏸ background ${dur} · ${caught} · now live ✓`;
   feed.insertBefore(div, feed.firstChild);
 }
 
@@ -1195,7 +1201,7 @@ function onVisibilityChange() {
     state.logTimer = setInterval(logTick, LOG_POLL_MS);
     const secs = pausedSince ? Math.round((Date.now() - pausedSince) / 1000) : 0;
     pausedSince = 0;
-    logTick().then(() => { if (secs >= 8) addFeedGapMarker(secs); });   // catch up, then mark the gap
+    logTick(true).then((n) => { if (secs >= 8) addFeedGapMarker(secs, n); });   // catch up (no stale toasts), then mark the gap
   }
   updateMonitorTitle();
   updateWlBanner();
