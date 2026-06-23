@@ -1105,7 +1105,15 @@ function addLead(lead, speaker, msg, raw, stale) {
   // For a BUY lead, lead.item is the watch *word*; show the actual listed item
   // ("Deepwater" -> "Deepwater Vambraces") but keep the word for the remove action.
   const term = kind === "BUY" ? lead.item : null;
-  const item = (kind === "BUY" && WL.listedItemFor(seg, term)) || lead.item;
+  // BUY matches are exact phrase; mark uncertain only if we couldn't isolate the
+  // listed item (fell back to the watch word). SELL is fuzzy IDF — a MAYBE tier is
+  // the low-confidence band, so flag it.
+  let item = lead.item;
+  let uncertain = kind === "SELL" && tier === "MAYBE";
+  if (kind === "BUY") {
+    const real = WL.listedItemFor(seg, term);
+    if (real) item = real; else uncertain = true;
+  }
   // Asking price: WTS for a BUY lead (seller's ask), WTB for a SELL lead (buyer's
   // offer). null when none was listed ("pst"/"offer").
   const price = WL.priceFor(seg, term || item);
@@ -1134,7 +1142,8 @@ function addLead(lead, speaker, msg, raw, stale) {
   row.innerHTML = `<button class="wl-plus" type="button" title="Show the raw log line">+</button>` +
     `<span class="wl-hit-t">${t}</span> ` +
     `<span class="wl-dir">${dir}</span> ` +
-    `<span class="wl-hit-item">${escapeHtml(item)}</span> ` +
+    `<span class="wl-hit-item">${escapeHtml(item)}</span>` +
+    (uncertain ? `<span class="wl-fuzzy" title="fuzzy match — may not be exact">*</span>` : "") + ` ` +
     (price ? `<span class="wl-price">${escapeHtml(price)}</span> ` : "") +
     `<span class="wl-hit-who">/tell ${escapeHtml(speaker)}</span>`;
   row.querySelector(".wl-plus").addEventListener("click", (e) => { e.stopPropagation(); showRawLine(raw); });

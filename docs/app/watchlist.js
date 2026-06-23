@@ -183,17 +183,19 @@ function priceFor(seg, item) {
 // so a one-word watch ("Deepwater") shows "Deepwater Vambraces" in the feed, not
 // just the word. Splits on EC's item separators, then strips a trailing quantity
 // (xN) and/or price from the matching chunk. null if not found. Display-only.
+// EC lists each item as "<name> <price/qty>", so we isolate item names by splitting
+// the segment on explicit separators AND on price/quantity tokens. That stops a
+// multi-item line (esp. space-separated, no //) from merging and showing the wrong
+// item for the match. Returns null if it can't cleanly isolate one, so the caller
+// falls back to the (always-accurate) watch word.
+const ITEM_SPLIT_RE = /\s*(?:\/\/|--|;|\||,)\s*|\s+x\d+\b|\s+\d+(?:\.\d+)?\s*(?:kr|kronos?|k|pp?|plat|m)?\b/gi;
 function listedItemFor(seg, term) {
   if (!seg) return null;
   if (!tokenize(term).length) return null;
-  for (const chunk of seg.split(/\s*(?:,|\/\/|--|;|\|)\s*/)) {
-    if (phraseMatch(term, phraseTokenGroups(chunk))) {
-      let s = chunk.trim().replace(/^[-\s]+/, "");
-      for (let i = 0; i < 2; i++) {   // peel up to 2 trailing qty/price tokens
-        s = s.replace(/\s+(?:x\d+|\d+(?:\.\d+)?\s*(?:kr|kronos?|k|pp?|plat|m)?)$/i, "").trim();
-      }
-      return s || null;
-    }
+  for (const part of seg.split(ITEM_SPLIT_RE)) {
+    if (!part) continue;
+    const clean = part.replace(/^[-\s]+|[-\s]+$/g, "");
+    if (clean && phraseMatch(term, phraseTokenGroups(clean))) return clean;
   }
   return null;
 }

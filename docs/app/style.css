@@ -253,6 +253,7 @@ pre#log {
 .wl-sell .wl-dir, .wl-sell .wl-hit-item { color: var(--green); }
 .wl-buy  .wl-dir, .wl-buy  .wl-hit-item { color: #cc99ff; }
 .wl-hit.maybe { opacity: 0.6; }
+.wl-fuzzy { color: var(--orange); font-weight: bold; cursor: help; }
 .wl-gap {
   padding: 4px 10px; font-size: 12px; color: var(--orange);
   background: rgba(255,153,0,0.08); border-bottom: 1px solid var(--border); text-align: center;
