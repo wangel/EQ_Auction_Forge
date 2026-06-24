@@ -25,6 +25,7 @@ const BULK_PRICE_LIMIT = 10;     // max item ids per /prices/bulk request
 const DEFAULT_KRONO_RATE = 4000; // fallback fold rate if the API reports none
 const RECENT_CHECK_FLOOR = 1000; // only items with a bulk median >= this get a recent-asks lookup
 const RECENT_SALES_LIMIT = 8;    // recent postings pulled per recent-asks lookup
+const DIVERGE_PCT = 14.7;        // % under the bulk median before recent asks flag an item overpriced (and the symmetric Recent Postings band)
 // NPC vendor buyback estimate (CHA-based). Port of vendor_multiplier/value_pp.
 const VENDOR_SLOPE = 0.004, VENDOR_INTERCEPT = 0.584, VENDOR_CAP = 1 / 1.05;
 // Apex host (valid cert). "/api" routes to a same-origin proxy for local dev.
@@ -577,7 +578,7 @@ async function resolvePrice(name, r, rate, pct, server) {
   if (!mk) return { priceStr: platStr, krono: false, diverge: null };
   if (mk.isKrono) return { priceStr: mk.priceStr, krono: true, diverge: null };  // no undercut on krono
   const divPct = (mk.effMed - med) / med * 100;
-  if (divPct <= -15 && mk.n >= 3) {
+  if (divPct <= -DIVERGE_PCT && mk.n >= 3) {
     return { priceStr: platStr, krono: false, diverge: { recent: mk.priceStr, pct: divPct, n: mk.n } };
   }
   return { priceStr: platStr, krono: false, diverge: null };
@@ -1257,8 +1258,8 @@ async function showRecentPostings(name, item = null) {
     if (!ref) { hint.textContent = `Recent WTS median ${shown} (over ${mk.n} asks) — price-check this item to compare vs the live median.`; hint.style.color = "var(--fg)"; }
     else {
       const pct = (mk.effMed - ref) / ref * 100;
-      if (pct <= -15) { hint.textContent = `📉 Recent WTS median ${shown} — ~${Math.abs(Math.round(pct))}% UNDER your ${ref.toLocaleString()}p check median. Median's lagging; consider repricing.`; hint.style.color = "#ff6666"; }
-      else if (pct >= 15) { hint.textContent = `📈 Recent WTS median ${shown} — ~${Math.round(pct)}% ABOVE your ${ref.toLocaleString()}p check median. Asks are climbing.`; hint.style.color = "#00ff66"; }
+      if (pct <= -DIVERGE_PCT) { hint.textContent = `📉 Recent WTS median ${shown} — ~${Math.abs(Math.round(pct))}% UNDER your ${ref.toLocaleString()}p check median. Median's lagging; consider repricing.`; hint.style.color = "#ff6666"; }
+      else if (pct >= DIVERGE_PCT) { hint.textContent = `📈 Recent WTS median ${shown} — ~${Math.round(pct)}% ABOVE your ${ref.toLocaleString()}p check median. Asks are climbing.`; hint.style.color = "#00ff66"; }
       else { hint.textContent = `≈ Recent WTS median ${shown} — in line with your ${ref.toLocaleString()}p check median.`; hint.style.color = "var(--muted)"; }
     }
     wrap.appendChild(hint);
