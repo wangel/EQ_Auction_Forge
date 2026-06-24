@@ -30,6 +30,12 @@
   </header>
 
   <main>
+    <div class="viewtabs">
+      <button id="tabBuilder" class="viewtab active" type="button">🔨 Macro Builder</button>
+      <button id="tabMonitor" class="viewtab" type="button">📡 Live Monitor</button>
+    </div>
+
+    <div id="builderView">
     <!-- Step 1: load the two data files -->
     <section class="card">
       <h2>1. Load files</h2>
@@ -171,6 +177,43 @@
       </div>
     </section>
 
+    </div><!-- /builderView -->
+
+    <!-- Live Monitor view (browser log-tail; visible-tab feature) -->
+    <div id="monitorView" hidden>
+    <section class="card">
+      <h2>Live EC Tunnel Monitor <span class="beta-tag">beta</span></h2>
+      <p class="hint">
+        Two kinds of EC-tunnel alert: someone <strong style="color:#00ff66">wanting
+        to buy</strong> an item you have (needs your inventory loaded above), or
+        someone <strong style="color:#cc99ff">selling</strong> an item on your
+        watchlist below. It reads <em>your own</em> EQ log file in the browser —
+        nothing is uploaded. <strong>Keep this tab visible</strong> (e.g. on a
+        second monitor, with EQ in borderless-windowed mode) for alerts to fire; a
+        hidden or minimized tab gets paused by the browser.
+      </p>
+      <div class="row">
+        <span class="hint" id="wlInvNote">SELL alerts (a buyer for your gear) need your inventory loaded.</span>
+        <button id="wlLoadInv" type="button">Load inventory…</button>
+      </div>
+      <div class="row">
+        <input type="text" id="wlInput" list="wlNames" placeholder="add an item to watch…" autocomplete="off">
+        <datalist id="wlNames"></datalist>
+        <button id="wlAddBtn" type="button">Add</button>
+      </div>
+      <div id="wlList" class="wl-list"></div>
+
+      <div class="row wl-monitor-row" id="wlMonitorRow">
+        <button id="wlPickLog" type="button" title="Pick your EQ log file (eqlog_&lt;char&gt;_&lt;server&gt;.txt). Stays on your machine.">Pick EQ log file…</button>
+        <span class="hint" id="wlLogName">no log file picked</span>
+        <button id="wlToggle" type="button" disabled>Start monitoring</button>
+        <button id="wlTestAlert" type="button" title="Fire a sample notification to confirm they work and grant permission">Test alert</button>
+      </div>
+      <div id="wlStatus" class="wl-status">Not monitoring</div>
+      <div id="wlFeed" class="wl-feed" hidden></div>
+    </section>
+    </div><!-- /monitorView -->
+
     <pre id="log" hidden></pre>
   </main>
 
@@ -186,6 +229,7 @@
     </div>
   </div>
 
+  <script src="watchlist.js"></script>
   <script src="forge.js"></script>
 </body>
 </html>

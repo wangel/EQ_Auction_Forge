@@ -194,3 +194,80 @@ pre#log {
   font-size: 12px;
 }
 .log-card h2 { color: var(--muted); }
+
+/* ----- view toggle (Macro Builder / Live Monitor) ----- */
+.viewtabs {
+  display: flex; gap: 4px; margin: 0 0 16px; padding: 4px;
+  background: #222; border: 1px solid var(--border); border-radius: 8px; width: fit-content;
+}
+.viewtab {
+  border: none; background: none; color: var(--muted); cursor: pointer;
+  padding: 7px 18px; border-radius: 6px; font: inherit; font-weight: bold;
+}
+.viewtab:hover { color: var(--fg); }
+.viewtab.active { background: var(--panel); color: var(--green); }
+
+/* ----- watchlist ----- */
+.beta-tag {
+  font-size: 11px; color: var(--bg); background: var(--orange);
+  border-radius: 3px; padding: 1px 6px; vertical-align: middle; font-weight: bold;
+}
+.wl-list { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+.wl-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+  padding: 3px 6px 3px 12px; font-size: 13px; color: var(--fg);
+}
+.wl-x {
+  border: none; background: transparent; color: var(--muted);
+  font-size: 16px; line-height: 1; padding: 0 4px; cursor: pointer; border-radius: 10px;
+}
+.wl-x:hover { color: #ff6666; background: rgba(255,102,102,0.12); }
+
+.wl-monitor-row { margin-top: 12px; }
+.wl-status {
+  font-size: 13px; padding: 6px 10px; border-radius: 4px; margin: 8px 0 0;
+  background: #222; color: var(--muted); border: 1px solid var(--border);
+}
+.wl-status.live   { color: var(--green);  border-color: rgba(0,255,102,0.4); }
+.wl-status.paused { color: var(--orange); border-color: rgba(255,153,0,0.4); }
+.wl-feed {
+  margin-top: 8px; max-height: 220px; overflow: auto;
+  border: 1px solid var(--border); border-radius: 4px; background: #111;
+}
+.wl-hit { padding: 4px 10px; border-bottom: 1px solid var(--border); font-size: 13px; display: flex; gap: 8px; align-items: center; }
+.wl-plus {
+  flex: none; width: 18px; height: 18px; line-height: 1; padding: 0;
+  border: 1px solid var(--border); border-radius: 3px; background: #222;
+  color: var(--muted); cursor: pointer; font-size: 13px;
+}
+.wl-plus:hover { background: #333; color: var(--fg); }
+.raw-line { white-space: pre-wrap; word-break: break-word; margin: 0; color: var(--fg); font-size: 13px; }
+.wl-hit:last-child { border-bottom: none; }
+.wl-hit-t { color: var(--muted); font-size: 11px; }
+.wl-hit-item { font-weight: bold; }
+.wl-price { color: var(--orange); font-weight: bold; }
+.wl-hit-who { color: var(--blue); margin-left: auto; }
+.wl-dir { font-size: 11px; font-weight: bold; border: 1px solid; border-radius: 3px; padding: 0 5px; }
+/* SELL TO = green (a buyer for my item); BUY FROM = purple (a seller of my want) */
+.wl-sell .wl-dir, .wl-sell .wl-hit-item { color: var(--green); }
+.wl-buy  .wl-dir, .wl-buy  .wl-hit-item { color: #cc99ff; }
+.wl-hit.maybe { opacity: 0.6; }
+.wl-fuzzy { color: var(--orange); font-weight: bold; cursor: help; }
+.wl-gap {
+  padding: 4px 10px; font-size: 12px; color: var(--orange);
+  background: rgba(255,153,0,0.08); border-bottom: 1px solid var(--border); text-align: center;
+}
+.wl-hit { cursor: pointer; }
+.wl-hit:hover { background: #181818; }
+
+.ctx-menu {
+  position: fixed; z-index: 200; min-width: 190px; overflow: hidden;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+  box-shadow: 0 6px 22px rgba(0,0,0,0.55);
+}
+.ctx-menu button {
+  display: block; width: 100%; text-align: left; border: none; border-radius: 0;
+  background: none; color: var(--fg); padding: 7px 12px; font: inherit; cursor: pointer;
+}
+.ctx-menu button:hover { background: #333; }

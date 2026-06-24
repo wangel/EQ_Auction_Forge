@@ -1,0 +1,37 @@
+[
+  {
+    "a": "gaunts",
+    "b": "gauntlets",
+    "r": 0.8
+  },
+  {
+    "a": "bane",
+    "b": "nife",
+    "r": 0.5
+  },
+  {
+    "a": "cof",
+    "b": "cloak",
+    "r": 0.5
+  },
+  {
+    "a": "frost",
+    "b": "frostbringer",
+    "r": 0.588235
+  },
+  {
+    "a": "darkwood",
+    "b": "darkwood",
+    "r": 1.0
+  },
+  {
+    "a": "silk",
+    "b": "milk",
+    "r": 0.75
+  },
+  {
+    "a": "jboots",
+    "b": "boots",
+    "r": 0.909091
+  }
+]

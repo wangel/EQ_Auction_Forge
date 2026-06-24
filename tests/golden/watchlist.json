@@ -1,0 +1,52 @@
+{
+  "watchlist": [
+    "Fungus Covered Scale Tunic",
+    "Cloak of Flames",
+    "Lamentation",
+    "Resplendent Gloves",
+    "Deepwater"
+  ],
+  "cases": [
+    {
+      "line": "[Tue Jun 09 03:14:02 2026] Soandso auctions, 'WTS Fungus Covered Scale Tunic 5000pp'",
+      "buy_hits": [
+        "Fungus Covered Scale Tunic"
+      ]
+    },
+    {
+      "line": "[Tue Jun 09 03:14:02 2026] Bob auctions, 'WTS Resplendent Robe 5000, Gloves of Stability 200'",
+      "buy_hits": []
+    },
+    {
+      "line": "[Tue Jun 09 03:14:02 2026] Cid auctions, 'WTB Cloak of Flames pst'",
+      "buy_hits": []
+    },
+    {
+      "line": "[Tue Jun 09 03:14:02 2026] Dot auctions, 'WTS Lamentation 1.5k // WTB Krono 10k'",
+      "buy_hits": [
+        "Lamentation"
+      ]
+    },
+    {
+      "line": "[Tue Jun 09 03:14:02 2026] Eve auctions, 'WTS Deepwater Helm 900p'",
+      "buy_hits": [
+        "Deepwater"
+      ]
+    },
+    {
+      "line": "[Tue Jun 09 03:14:02 2026] Fae auctions, 'WTS Cloak of Flames 8k, Lamentation 1.5k'",
+      "buy_hits": [
+        "Cloak of Flames",
+        "Lamentation"
+      ]
+    },
+    {
+      "line": "[Tue Jun 09 03:14:02 2026] Gus auctions, 'WTB Deepwater pst'",
+      "buy_hits": []
+    },
+    {
+      "line": "not an auction line at all",
+      "buy_hits": []
+    }
+  ]
+}

@@ -549,6 +549,9 @@ RECENT_SALES_LIMIT = 8  # postings shown by the "Recent Postings" reference look
 # price check (krono auto-resolve + plat divergence flag). Bounds the extra per-item
 # calls to the high-value items where mispricing actually costs plat.
 RECENT_CHECK_FLOOR = 1000
+# How far under the bulk median recent asks must run (percent) before we flag a
+# plat item as overpriced, and the symmetric band for the Recent Postings hint.
+DIVERGE_PCT = 14.7
 
 
 def fetch_recent_sales(item_name, server=SERVER, limit=RECENT_SALES_LIMIT):
@@ -2507,7 +2510,7 @@ Pricing: tlp-auctions.com"""
                     f"krono item -> {mk['price_str']} (recent median; "
                     f"bulk was {median:,}p plat)", None)
         pct = (mk['eff_med'] - median) / median * 100.0
-        if pct <= -15 and mk['n'] >= 3:
+        if pct <= -DIVERGE_PCT and mk['n'] >= 3:
             detail = f"{detail}  | recent asks ~{mk['price_str']} ({pct:.0f}%) — FLAGGED"
             return price, detail, {'recent': mk['price_str'], 'pct': pct, 'n': mk['n']}
         return price, detail, None
@@ -2778,11 +2781,11 @@ Pricing: tlp-auctions.com"""
                 fg = '#cccccc'
             else:
                 pct = (eff_med - ref) / ref * 100.0
-                if pct <= -15:
+                if pct <= -DIVERGE_PCT:
                     line = (f"📉 Recent WTS median {shown} — ~{abs(pct):.0f}% UNDER your "
                             f"{ref:,}p check median. Median's lagging; consider repricing.")
                     fg = '#ff6666'
-                elif pct >= 15:
+                elif pct >= DIVERGE_PCT:
                     line = (f"📈 Recent WTS median {shown} — ~{pct:.0f}% ABOVE your "
                             f"{ref:,}p check median. Asks are climbing.")
                     fg = '#00ff66'

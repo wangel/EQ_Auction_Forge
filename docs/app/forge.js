@@ -25,6 +25,7 @@ const BULK_PRICE_LIMIT = 10;     // max item ids per /prices/bulk request
 const DEFAULT_KRONO_RATE = 4000; // fallback fold rate if the API reports none
 const RECENT_CHECK_FLOOR = 1000; // only items with a bulk median >= this get a recent-asks lookup
 const RECENT_SALES_LIMIT = 8;    // recent postings pulled per recent-asks lookup
+const DIVERGE_PCT = 14.7;        // % under the bulk median before recent asks flag an item overpriced (and the symmetric Recent Postings band)
 // NPC vendor buyback estimate (CHA-based). Port of vendor_multiplier/value_pp.
 const VENDOR_SLOPE = 0.004, VENDOR_INTERCEPT = 0.584, VENDOR_CAP = 1 / 1.05;
 // Apex host (valid cert). "/api" routes to a same-origin proxy for local dev.
@@ -72,6 +73,15 @@ const state = {
   invSort: { col: null, desc: false },   // inventory column sort
   aucSort: { col: null, desc: false },   // auction column sort
   kronoRate: 0,      // last krono->plat rate seen (for the Recent Postings hint)
+  watchlist: [],     // item names to alert on when seen WTS in EC tunnel
+  logHandle: null,   // FileSystemFileHandle for the EQ log (persisted in IndexedDB)
+  logSize: 0,        // last byte offset read (tail-from-end)
+  logTimer: null,    // setInterval id while monitoring
+  monitoring: false, // tailing the log right now?
+  lastCheckAt: 0,    // ms timestamp of the last successful read (for the banner)
+  idf: null,         // IDF map for the fuzzy SELL matcher (built from the DB once)
+  aliasPats: null,   // compiled alias patterns for SELL expansion
+  silenced: new Set(), // lowercased auctioneer names muted from toasts
 };
 
 // ----- tiny DOM helpers -----
@@ -568,7 +578,7 @@ async function resolvePrice(name, r, rate, pct, server) {
   if (!mk) return { priceStr: platStr, krono: false, diverge: null };
   if (mk.isKrono) return { priceStr: mk.priceStr, krono: true, diverge: null };  // no undercut on krono
   const divPct = (mk.effMed - med) / med * 100;
-  if (divPct <= -15 && mk.n >= 3) {
+  if (divPct <= -DIVERGE_PCT && mk.n >= 3) {
     return { priceStr: platStr, krono: false, diverge: { recent: mk.priceStr, pct: divPct, n: mk.n } };
   }
   return { priceStr: platStr, krono: false, diverge: null };
@@ -770,6 +780,443 @@ function loadPrefs() {
   if (typeof p.bagsOnly === "boolean" && $("invBagsOnly")) $("invBagsOnly").checked = p.bagsOnly;
 }
 
+// ----- watchlist: items to be alerted on when someone WTSs them in EC tunnel ---
+// Stored as canonical item names (free text allowed; autocomplete suggests DB
+// names). Persisted locally, like prefs — nothing leaves the machine. The match
+// engine is docs/app/watchlist.js (WL.watchlistHits), parity-locked to desktop.
+const WATCHLIST_KEY = "eqaf-watchlist";
+
+function loadWatchlist() {
+  let arr;
+  try { arr = JSON.parse(localStorage.getItem(WATCHLIST_KEY) || "[]"); } catch { arr = []; }
+  state.watchlist = Array.isArray(arr) ? arr.filter((x) => typeof x === "string" && x.trim()) : [];
+}
+function saveWatchlist() {
+  try { localStorage.setItem(WATCHLIST_KEY, JSON.stringify(state.watchlist)); } catch { /* private mode */ }
+}
+
+function addToWatchlist(name) {
+  const n = (name || "").trim();
+  if (n.length < 2) return false;
+  if (state.watchlist.some((x) => x.toLowerCase() === n.toLowerCase())) {  // case-insensitive dedupe
+    setStatus(`"${n}" is already on your watchlist.`);
+    return false;
+  }
+  state.watchlist.push(n);
+  state.watchlist.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+  saveWatchlist();
+  renderWatchlist();
+  setStatus(`Added "${n}" to watchlist.`);
+  log(`Watchlist + ${n}`);
+  return true;
+}
+
+function removeFromWatchlist(name) {
+  const i = state.watchlist.findIndex((x) => x === name);
+  if (i === -1) return;
+  state.watchlist.splice(i, 1);
+  saveWatchlist();
+  renderWatchlist();
+  setStatus(`Removed "${name}" from watchlist.`);
+  log(`Watchlist − ${name}`);
+}
+
+function renderWatchlist() {
+  const box = $("wlList");
+  if (!box) return;
+  box.innerHTML = "";
+  if (!state.watchlist.length) {
+    const empty = document.createElement("span");
+    empty.className = "hint";
+    empty.textContent = "No items yet — add items you want to be alerted about.";
+    box.appendChild(empty);
+    return;
+  }
+  for (const name of state.watchlist) {
+    const chip = document.createElement("span");
+    chip.className = "wl-chip";
+    const label = document.createElement("span");
+    label.textContent = name;
+    const x = document.createElement("button");
+    x.type = "button";
+    x.className = "wl-x";
+    x.title = `Remove ${name}`;
+    x.textContent = "×";
+    x.addEventListener("click", () => removeFromWatchlist(name));
+    chip.appendChild(label);
+    chip.appendChild(x);
+    box.appendChild(chip);
+  }
+}
+
+// Populate the autocomplete datalist with up to 20 DB names matching the current
+// input (a full 133k-option datalist would be unusably slow).
+function updateWatchlistAutocomplete() {
+  const dl = $("wlNames");
+  if (!dl || !state.db) return;
+  const q = $("wlInput").value.trim().toLowerCase();
+  dl.innerHTML = "";
+  if (q.length < 2) return;
+  let added = 0;
+  for (const n of state.db.byName.keys()) {
+    if (n.toLowerCase().includes(q)) {
+      const opt = document.createElement("option");
+      opt.value = n;
+      dl.appendChild(opt);
+      if (++added >= 20) break;
+    }
+  }
+}
+
+// ----- view toggle: Macro Builder <-> Live Monitor (shared state, one page) -----
+const VIEW_KEY = "eqaf-view";
+function setView(mode) {
+  const monitor = mode === "monitor";
+  if ($("builderView")) $("builderView").hidden = monitor;
+  if ($("monitorView")) $("monitorView").hidden = !monitor;
+  if ($("tabBuilder")) $("tabBuilder").classList.toggle("active", !monitor);
+  if ($("tabMonitor")) $("tabMonitor").classList.toggle("active", monitor);
+  try { localStorage.setItem(VIEW_KEY, mode); } catch { /* private mode */ }
+  if (monitor) updateMonitorInvNote();
+}
+// SELL matching needs the inventory; surface its state in the monitor view so the
+// dependency is obvious (and offer to load it without switching back to Builder).
+function updateMonitorInvNote() {
+  const el = $("wlInvNote");
+  if (!el) return;
+  const n = state.inventory.length;
+  el.textContent = n ? `Inventory loaded: ${n} items — SELL alerts active.`
+                     : "SELL alerts (a buyer for your gear) need your inventory loaded.";
+  el.style.color = n ? "var(--green)" : "";
+}
+
+// ----- log tailer: watchlist alerts from your own EQ log (visible-tab feature) --
+// A browser tab only runs full-rate timers while VISIBLE; hidden/minimized it's
+// throttled hard (measured 46s gaps). So this is honest about its state via the
+// live/paused banner rather than pretending to work in the background. Reading is
+// incremental (seek to the last byte offset), so even a multi-GB log is cheap.
+const LOG_POLL_MS = 3000;
+const NOTIFY_COOLDOWN_MS = 60000;   // don't re-toast the same item within a minute
+const lastNotify = new Map();       // item name -> last OS-notification timestamp
+
+function notifyReady() {
+  return typeof Notification !== "undefined" && Notification.permission === "granted";
+}
+
+// Explicit "does this work?" button — also the clean way to trigger the browser's
+// permission prompt (auto-requesting on Start is easy to dismiss without noticing).
+async function testAlert() {
+  if (typeof Notification === "undefined") { setStatus("This browser has no notifications API."); return; }
+  let perm = Notification.permission;
+  if (perm === "default") perm = await Notification.requestPermission();
+  if (perm === "granted") {
+    new Notification("EQ Auction Forge — test alert", {
+      body: "Notifications work. You'll get one of these when a watchlist item is up for sale.",
+    });
+    setStatus("Test notification sent.");
+  } else {
+    setStatus("Notifications are blocked — click the padlock in the address bar → allow notifications for this site.");
+  }
+}
+
+// Tiny IndexedDB key/value store, just to persist the FileSystemFileHandle so the
+// user doesn't re-pick the log every session (localStorage can't hold a handle).
+function idbOpen() {
+  return new Promise((res, rej) => {
+    const r = indexedDB.open("eqaf", 1);
+    r.onupgradeneeded = () => r.result.createObjectStore("kv");
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+}
+async function idbGet(key) {
+  const db = await idbOpen();
+  return new Promise((res, rej) => {
+    const q = db.transaction("kv", "readonly").objectStore("kv").get(key);
+    q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error);
+  });
+}
+async function idbPut(key, val) {
+  const db = await idbOpen();
+  return new Promise((res, rej) => {
+    const tx = db.transaction("kv", "readwrite");
+    tx.objectStore("kv").put(val, key);
+    tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error);
+  });
+}
+
+async function pickLogFile() {
+  if (!window.showOpenFilePicker) { setStatus("Live alerts need Chrome/Edge (File System Access)."); return; }
+  try {
+    const [h] = await window.showOpenFilePicker({ multiple: false });
+    state.logHandle = h;
+    try { await idbPut("logHandle", h); } catch { /* private mode */ }
+    $("wlToggle").disabled = false;
+    setStatus(`Log file: ${h.name}. Click Start monitoring.`);
+    updateLogName();
+  } catch { /* user cancelled */ }
+}
+
+// On load, re-attach the saved handle (permission is re-checked on Start, which is
+// the user gesture the browser requires to re-grant file access).
+async function restoreLogHandle() {
+  if (!window.showOpenFilePicker) return;
+  try {
+    const h = await idbGet("logHandle");
+    if (h) { state.logHandle = h; $("wlToggle").disabled = false; updateLogName(); }
+  } catch { /* ignore */ }
+}
+
+function updateLogName() {
+  const el = $("wlLogName");
+  if (el) el.textContent = state.logHandle ? state.logHandle.name : "no log file picked";
+}
+
+async function startMonitoring() {
+  if (!state.logHandle) { setStatus("Pick your EQ log file first."); return; }
+  const perm = await state.logHandle.requestPermission({ mode: "read" });
+  if (perm !== "granted") { setStatus("Permission to read the log was denied."); return; }
+  if (typeof Notification !== "undefined" && Notification.permission === "default") {
+    await Notification.requestPermission();
+  }
+  // Build the IDF index for SELL matching once (from the loaded DB). Skipped if
+  // the DB isn't ready — BUY/watchlist matching doesn't need it.
+  if (state.db && !state.idf) {
+    const t0 = performance.now();
+    state.idf = WL.buildIdf([...state.db.byName.keys()]).idf;
+    state.aliasPats = WL.compileAliases(WL.DEFAULT_ALIASES);
+    log(`Built match index: ${state.idf.size} tokens in ${Math.round(performance.now() - t0)}ms.`);
+  }
+  const f = await state.logHandle.getFile();
+  state.logSize = f.size;          // tail from END — no history replay
+  state.monitoring = true;
+  state.lastCheckAt = Date.now();
+  state.logTimer = setInterval(logTick, LOG_POLL_MS);
+  $("wlToggle").textContent = "Stop monitoring";
+  $("wlFeed").hidden = false;
+  updateWlBanner();
+  setStatus(`Monitoring ${state.logHandle.name} for watchlist sales.`);
+  log(`Watchlist monitor: tailing ${state.logHandle.name} from end (${f.size} bytes).`);
+}
+
+function stopMonitoring() {
+  state.monitoring = false;
+  if (state.logTimer) { clearInterval(state.logTimer); state.logTimer = null; }
+  $("wlToggle").textContent = "Start monitoring";
+  updateWlBanner();
+  updateMonitorTitle();   // clear the paused-tab tag
+  setStatus("Stopped monitoring.");
+}
+
+// catchUp=true marks a post-background backlog read: lines still go to the feed
+// (so you see what you missed) but they DON'T toast — a stale 3-min-old auction
+// you can't act on shouldn't ping. Returns how many matches it added.
+async function logTick(catchUp = false) {
+  let added = 0;
+  try {
+    const f = await state.logHandle.getFile();
+    if (f.size < state.logSize) state.logSize = 0;       // file rotated/truncated
+    if (f.size > state.logSize) {
+      const buf = await f.slice(state.logSize).arrayBuffer();
+      state.logSize = f.size;
+      const text = new TextDecoder("latin1").decode(buf);   // EQ logs are ANSI
+      const candidates = state.inventory.map((i) => i.name);
+      for (const raw of text.split(/\r?\n/)) {
+        const parsed = WL.parseAuctionLine(raw);
+        if (!parsed) continue;
+        const leads = WL.matchLine(parsed.msg, {
+          candidates, idf: state.idf, aliasPats: state.aliasPats, watchlist: state.watchlist,
+        });
+        for (const lead of leads) { addLead(lead, parsed.speaker, parsed.msg, raw, catchUp); added++; }
+      }
+    }
+    state.lastCheckAt = Date.now();
+  } catch (e) {
+    log("Watchlist monitor read error: " + e);
+  }
+  updateWlBanner();
+  return added;
+}
+
+// ----- silenced auctioneers (mute a spammer; still show them, greyed) ----------
+const SILENCED_KEY = "eqaf-silenced";
+function loadSilenced() {
+  try { state.silenced = new Set(JSON.parse(localStorage.getItem(SILENCED_KEY) || "[]").map((s) => String(s).toLowerCase())); }
+  catch { state.silenced = new Set(); }
+}
+function isSilenced(who) { return state.silenced.has(String(who).toLowerCase()); }
+function setSilenced(who, on) {
+  const k = String(who).toLowerCase();
+  if (on) state.silenced.add(k); else state.silenced.delete(k);
+  try { localStorage.setItem(SILENCED_KEY, JSON.stringify([...state.silenced])); } catch { /* private mode */ }
+  setStatus(`${on ? "Silenced" : "Unsilenced"} ${who}.`);
+}
+
+function copyText(s) {
+  if (navigator.clipboard) navigator.clipboard.writeText(s).then(
+    () => setStatus(`Copied: ${s.trim()}`), () => setStatus("Copy failed (clipboard blocked)."));
+  else setStatus("Clipboard not available in this browser.");
+}
+
+function closeFeedMenu() { const m = document.querySelector(".ctx-menu"); if (m) m.remove(); }
+
+// Right-click a feed row -> desktop-style menu: copy the /tell, copy the item,
+// silence/unsilence the auctioneer, and (BUY rows) remove the item from the list.
+function showFeedMenu(ev, row) {
+  ev.preventDefault();
+  closeFeedMenu();
+  const { speaker, item, kind, term } = row.dataset;
+  const menu = document.createElement("div");
+  menu.className = "ctx-menu";
+  const add = (label, fn) => {
+    const b = document.createElement("button"); b.type = "button"; b.textContent = label;
+    b.addEventListener("click", () => { fn(); closeFeedMenu(); });
+    menu.appendChild(b);
+  };
+  add(`Copy  /tell ${speaker}`, () => copyText(`/tell ${speaker} `));
+  add(`Copy  "${item}"`, () => copyText(item));
+  const silenced = isSilenced(speaker);
+  add(silenced ? `Unsilence ${speaker}` : `Silence ${speaker} (mute toasts)`, () => setSilenced(speaker, !silenced));
+  if (kind === "BUY" && term && state.watchlist.some((x) => x.toLowerCase() === term.toLowerCase())) {
+    add(`Remove "${term}" from watchlist`, () => removeFromWatchlist(term));
+  }
+  document.body.appendChild(menu);
+  // clamp to viewport so a row near the edge doesn't push the menu offscreen
+  const r = menu.getBoundingClientRect();
+  menu.style.left = Math.min(ev.clientX, window.innerWidth - r.width - 6) + "px";
+  menu.style.top = Math.min(ev.clientY, window.innerHeight - r.height - 6) + "px";
+  setTimeout(() => document.addEventListener("click", closeFeedMenu, { once: true }), 0);
+}
+
+// Render one lead {kind:'SELL'|'BUY', tier, item} into the feed (+ a toast for
+// HIGH-confidence ones). SELL = someone wants to buy what I have (green); BUY =
+// someone's selling what I want (purple). Only HIGH toasts — MAYBE is feed-only,
+// mirroring the desktop's loud/quiet tiers — and toasts are throttled per item.
+function showRawLine(raw) {
+  const pre = document.createElement("pre");
+  pre.className = "raw-line";
+  pre.textContent = raw;
+  openModal("Raw auction line", pre);
+}
+
+function addLead(lead, speaker, msg, raw, stale) {
+  const { kind, tier } = lead;
+  const dir = kind === "SELL" ? "SELL TO" : "BUY FROM";
+  const seg = kind === "SELL" ? WL.buySegments(msg) : WL.sellSegments(msg);
+  // For a BUY lead, lead.item is the watch *word*; show the actual listed item
+  // ("Deepwater" -> "Deepwater Vambraces") but keep the word for the remove action.
+  const term = kind === "BUY" ? lead.item : null;
+  // BUY matches are exact phrase; mark uncertain only if we couldn't isolate the
+  // listed item (fell back to the watch word). SELL is fuzzy IDF — a MAYBE tier is
+  // the low-confidence band, so flag it.
+  let item = lead.item;
+  let uncertain = kind === "SELL" && tier === "MAYBE";
+  if (kind === "BUY") {
+    const real = WL.listedItemFor(seg, term);
+    if (real) item = real; else uncertain = true;
+  }
+  // Asking price: WTS for a BUY lead (seller's ask), WTB for a SELL lead (buyer's
+  // offer). null when none was listed ("pst"/"offer").
+  const price = WL.priceFor(seg, term || item);
+  const priceStr = price ? ` ${price}` : "";
+  const muted = isSilenced(speaker);
+  log(`★ ${kind} ${item}${priceStr} — ${speaker}: ${msg}`);
+  setStatus(`${kind === "SELL" ? "Buyer" : "Seller"} for ${item}${priceStr}: ${speaker}`);
+  if (tier === "HIGH" && !muted && !stale && notifyReady()) {
+    const now = Date.now();
+    if (now - (lastNotify.get(item) || 0) >= NOTIFY_COOLDOWN_MS) {
+      lastNotify.set(item, now);
+      const body = kind === "SELL"
+        ? `${speaker} wants to buy it — /tell ${speaker}`
+        : `${speaker}: ${msg}`.slice(0, 180);
+      new Notification(`${item}${priceStr} — ${dir} ${speaker}`, { body });
+    }
+  }
+  const feed = $("wlFeed");
+  if (!feed) return;
+  const row = document.createElement("div");
+  row.className = "wl-hit wl-" + kind.toLowerCase() + ((tier === "MAYBE" || muted) ? " maybe" : "");
+  row.dataset.speaker = speaker; row.dataset.item = item; row.dataset.kind = kind;
+  row.dataset.term = term || "";   // watchlist word that matched (for remove)
+  row.title = "Click to copy /tell · right-click for more";
+  const t = new Date().toLocaleTimeString();
+  row.innerHTML = `<button class="wl-plus" type="button" title="Show the raw log line">+</button>` +
+    `<span class="wl-hit-t">${t}</span> ` +
+    `<span class="wl-dir">${dir}</span> ` +
+    `<span class="wl-hit-item">${escapeHtml(item)}</span>` +
+    (uncertain ? `<span class="wl-fuzzy" title="fuzzy match — may not be exact">*</span>` : "") + ` ` +
+    (price ? `<span class="wl-price">${escapeHtml(price)}</span> ` : "") +
+    `<span class="wl-hit-who">/tell ${escapeHtml(speaker)}</span>`;
+  row.querySelector(".wl-plus").addEventListener("click", (e) => { e.stopPropagation(); showRawLine(raw); });
+  row.addEventListener("click", () => copyText(`/tell ${speaker} `));
+  row.addEventListener("contextmenu", (e) => showFeedMenu(e, row));
+  feed.insertBefore(row, feed.firstChild);
+  while (feed.children.length > 50) feed.removeChild(feed.lastChild);
+  if (document.hidden && state.monitoring) { hiddenAlertCount++; updateMonitorTitle(); }
+}
+
+// Honest live/paused indicator. Visible tab -> live; hidden/minimized -> paused
+// (the browser throttles us, so we say so instead of silently missing alerts).
+function updateWlBanner() {
+  const el = $("wlStatus");
+  if (!el) return;
+  if (!state.monitoring) { el.textContent = "Not monitoring"; el.className = "wl-status"; return; }
+  if (typeof document !== "undefined" && document.hidden) {
+    el.textContent = "⏸ Paused — tab not visible. Bring it to the foreground (or a 2nd monitor) to resume alerts.";
+    el.className = "wl-status paused";
+    return;
+  }
+  const ago = state.lastCheckAt ? Math.round((Date.now() - state.lastCheckAt) / 1000) : 0;
+  el.textContent = `● Live — last check ${ago}s ago`;
+  el.className = "wl-status live";
+}
+
+// Tab-strip tag: while monitoring + backgrounded, the tab title shows it's paused
+// plus a 🔔N badge of alerts that landed while away — so a glance at the tab strip
+// tells you "oops, this was in the background" even though the banner is off-screen.
+let baseTitle = "";
+let pausedSince = 0;
+let hiddenAlertCount = 0;
+function updateMonitorTitle() {
+  if (typeof document === "undefined") return;
+  if (state.monitoring && document.hidden) {
+    const badge = hiddenAlertCount ? `🔔${hiddenAlertCount} ` : "";
+    document.title = `${badge}⏸ ${baseTitle}`;
+  } else {
+    document.title = baseTitle;
+  }
+}
+
+// Insert a divider in the feed marking a stretch where the tab was backgrounded
+// (and alerts were throttled/delayed), so the blind spot is visible in the timeline.
+function addFeedGapMarker(secs, n = 0) {
+  const feed = $("wlFeed");
+  if (!feed) return;
+  const dur = secs >= 60 ? `${Math.floor(secs / 60)}m ${secs % 60}s` : `${secs}s`;
+  const caught = n ? `caught up — ${n} match${n === 1 ? "" : "es"} while away (below)` : "caught up — nothing missed";
+  const div = document.createElement("div");
+  div.className = "wl-gap";
+  div.textContent = `⏸ background ${dur} · ${caught} · now live ✓`;
+  feed.insertBefore(div, feed.firstChild);
+}
+
+function onVisibilityChange() {
+  if (document.hidden) {
+    if (state.monitoring) { pausedSince = Date.now(); hiddenAlertCount = 0; }
+  } else if (state.monitoring) {
+    // Resume: a backgrounded interval gets throttled or frozen by the browser and
+    // doesn't always wake cleanly — so restart the timer and force an immediate
+    // catch-up read instead of waiting on the (possibly wedged) old interval.
+    if (state.logTimer) clearInterval(state.logTimer);
+    state.logTimer = setInterval(logTick, LOG_POLL_MS);
+    const secs = pausedSince ? Math.round((Date.now() - pausedSince) / 1000) : 0;
+    pausedSince = 0;
+    logTick(true).then((n) => { if (secs >= 8) addFeedGapMarker(secs, n); });   // catch up (no stale toasts), then mark the gap
+  }
+  updateMonitorTitle();
+  updateWlBanner();
+}
+
 // Set an auction item's price to the recent median (no undercut — match the live
 // market, don't undercut it). Port of _use_recent_median (auction-list case).
 function useRecentMedian(item, price) {
@@ -811,8 +1258,8 @@ async function showRecentPostings(name, item = null) {
     if (!ref) { hint.textContent = `Recent WTS median ${shown} (over ${mk.n} asks) — price-check this item to compare vs the live median.`; hint.style.color = "var(--fg)"; }
     else {
       const pct = (mk.effMed - ref) / ref * 100;
-      if (pct <= -15) { hint.textContent = `📉 Recent WTS median ${shown} — ~${Math.abs(Math.round(pct))}% UNDER your ${ref.toLocaleString()}p check median. Median's lagging; consider repricing.`; hint.style.color = "#ff6666"; }
-      else if (pct >= 15) { hint.textContent = `📈 Recent WTS median ${shown} — ~${Math.round(pct)}% ABOVE your ${ref.toLocaleString()}p check median. Asks are climbing.`; hint.style.color = "#00ff66"; }
+      if (pct <= -DIVERGE_PCT) { hint.textContent = `📉 Recent WTS median ${shown} — ~${Math.abs(Math.round(pct))}% UNDER your ${ref.toLocaleString()}p check median. Median's lagging; consider repricing.`; hint.style.color = "#ff6666"; }
+      else if (pct >= DIVERGE_PCT) { hint.textContent = `📈 Recent WTS median ${shown} — ~${Math.round(pct)}% ABOVE your ${ref.toLocaleString()}p check median. Asks are climbing.`; hint.style.color = "#00ff66"; }
       else { hint.textContent = `≈ Recent WTS median ${shown} — in line with your ${ref.toLocaleString()}p check median.`; hint.style.color = "var(--muted)"; }
     }
     wrap.appendChild(hint);
@@ -1376,6 +1823,7 @@ $("invFile").addEventListener("change", async (e) => {
     $("invStatus").textContent = `${state.inventory.length} items`;
     log(`Inventory: ${state.inventory.length} items. Select items and Add them to the auction list →`);
     buildInventoryTable();
+    updateMonitorInvNote();
   } catch (err) {
     $("invStatus").textContent = "failed";
     log("Inventory load failed: " + (err && err.message ? err.message : err));
@@ -1423,6 +1871,40 @@ $("copyBtn").addEventListener("click", copyMacros);
 PREF_IDS.forEach((id) => { const el = $(id); if (el) el.addEventListener("change", savePrefs); });
 $("invBagsOnly").addEventListener("change", savePrefs);
 
+// Watchlist controls
+if ($("wlInput")) {
+  $("wlInput").addEventListener("input", updateWatchlistAutocomplete);
+  $("wlInput").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); if (addToWatchlist($("wlInput").value)) $("wlInput").value = ""; }
+  });
+  $("wlAddBtn").addEventListener("click", () => { if (addToWatchlist($("wlInput").value)) $("wlInput").value = ""; });
+}
+
+// View toggle (Macro Builder <-> Live Monitor)
+if ($("tabBuilder")) {
+  $("tabBuilder").addEventListener("click", () => setView("builder"));
+  $("tabMonitor").addEventListener("click", () => setView("monitor"));
+  if ($("wlLoadInv")) $("wlLoadInv").addEventListener("click", () => $("invFile").click());
+  let savedView = "builder";
+  try { savedView = localStorage.getItem(VIEW_KEY) || "builder"; } catch { /* private mode */ }
+  setView(savedView);
+}
+
+// Watchlist monitor (FSA log tailer). Hide the controls entirely where the File
+// System Access API is missing (Firefox/Safari) — show a one-line note instead.
+if ($("wlPickLog")) {
+  if (window.showOpenFilePicker) {
+    $("wlPickLog").addEventListener("click", pickLogFile);
+    $("wlToggle").addEventListener("click", () => (state.monitoring ? stopMonitoring() : startMonitoring()));
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    if ($("wlTestAlert")) $("wlTestAlert").addEventListener("click", testAlert);
+    restoreLogHandle();
+  } else {
+    const note = $("wlMonitorRow");
+    if (note) note.innerHTML = '<span class="hint">Live alerts need a Chromium browser (Chrome/Edge) for file access. Your watchlist still saves here.</span>';
+  }
+}
+
 // The dev proxy only exists on localhost — hide its toggle entirely on Pages so
 // a visitor never sees (or ticks) a dead control.
 if (!isLocalhost()) {
@@ -1433,6 +1915,9 @@ if (!isLocalhost()) {
 { const av = $("appVersion"); if (av) av.textContent = "v" + APP_VERSION; }  // single source of truth
 
 loadPrefs();    // restore saved toolbar values (lightweight Settings)
+loadWatchlist(); renderWatchlist();   // restore the saved watchlist
+loadSilenced();                       // restore muted auctioneers
+baseTitle = document.title;           // captured for the paused-tab title tag
 log("Ready.");
 track("view");  // anonymous visit ping (production origin only)
 autoLoadDb();   // pull the bundled DB automatically when served (localhost/Pages)
